@@ -1,0 +1,17 @@
+[package]
+name = "game-engine"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytemuck = "1.7.2"
+glam = { version = "0.20.0", features = [ "bytemuck" ] }
+egui = "0.15.0"
+egui_glow = "0.15.0"
+glutin = "0.27"
+glow = "0.11"
+quick_from = "0.2.0"
+winit_input_helper = "0.10.0"
+
