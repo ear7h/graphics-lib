@@ -35,7 +35,7 @@ where
     }
 }
 
-#[derive(QuickFrom)]
+#[derive(QuickFrom, Clone)]
 pub enum UniformValue<'a> {
     #[quick_from]
     Int(u32),

@@ -51,17 +51,17 @@ const MAX_SHADOWS : usize = 10;
 
 
 
-struct ShadowMapDebug {
+struct TextureDebug {
     prog : LoadedProg,
     plane : LoadedObj,
 }
 
-impl ShadowMapDebug {
+impl TextureDebug {
     fn new(ctx : &GraphicsContext) -> Self {
-        println!("shadow map debug");
+        println!("texture debug");
         let prog = ctx.load_program(
-            include_str!("shaders/shadow_dbg.vert"),
-            include_str!("shaders/shadow_dbg.frag"),
+            include_str!("shaders/texture_dbg.vert"),
+            include_str!("shaders/texture_dbg.frag"),
         ).unwrap();
 
         let plane = ctx.load_object(
@@ -75,11 +75,10 @@ impl ShadowMapDebug {
         &self,
         ctx : &GraphicsContext,
         tex : glow::Texture,
-        idx : usize,
     ) {
         unsafe {
-            ctx.gl.use_program(Some(self.prog.prog));
 
+            ctx.gl.use_program(Some(self.prog.prog));
             ctx.gl.bind_vertex_array(Some(self.plane.vao));
 
             error_check(&ctx.gl);
@@ -89,8 +88,10 @@ impl ShadowMapDebug {
             // bind a sampler object?
 
             let u = &[
-                ("tex", 0 as u32),
-                ("idx", idx as u32),
+                ("tex", UniformValue::Int(0)),
+                ("near", UniformValue::Float(0.1)),
+                ("far", UniformValue::Float(10.0)),
+                // ("idx", idx as u32),
             ][..];
 
             u.set_uniforms(&mut UniformSetter{
@@ -149,6 +150,8 @@ impl ShadowMapper {
                 None, // data
             );
 
+            ctx.set_texture_parameters();
+
             ctx.gl.bind_texture(
                 glow::TEXTURE_2D,
                 None,
@@ -193,9 +196,9 @@ impl ShadowMapper {
                 // 0, // idx as i32,
             );
 
-            ctx.gl.use_program(Some(self.prog.prog));
             ctx.gl.draw_buffer(glow::NONE);
             ctx.gl.enable(glow::DEPTH_TEST);
+            ctx.gl.clear(glow::DEPTH_BUFFER_BIT);
 
             let fb_status = ctx.gl.check_framebuffer_status(
                 glow::FRAMEBUFFER
@@ -203,12 +206,17 @@ impl ShadowMapper {
 
             assert_eq!(fb_status, glow::FRAMEBUFFER_COMPLETE);
 
+            ctx.gl.use_program(Some(self.prog.prog));
+            ctx.gl.viewport(0, 0, 1024, 1024);
+
             // iterate the objects
             scene.visit_surfaces(
                 proj,
                 root,
                 &mut |mat, surface : &Surface| {
-                    let u = &[("lightspace", mat)][..];
+                    let u = &[
+                        ("lightspace", UniformValue::Mat4(mat)),
+                    ][..];
 
                     u.set_uniforms(&mut UniformSetter{
                         gl : &ctx.gl,
@@ -236,6 +244,8 @@ impl ShadowMapper {
 
             error_check(&ctx.gl);
 
+            let (w, h) = ctx.logical_size();
+            ctx.gl.viewport(0, 0, w as i32, h as i32);
             ctx.gl.bind_framebuffer(
                 glow::DRAW_FRAMEBUFFER,
                 None,
@@ -243,7 +253,6 @@ impl ShadowMapper {
 
             error_check(&ctx.gl);
         }
-
     }
 
     /*
@@ -310,6 +319,13 @@ impl GraphicsContext {
         let scale = self.gl_window.window().scale_factor();
         let size : glutin::dpi::LogicalSize<f32> = self.gl_window.window().inner_size().to_logical(scale);
         (size.width as f32) / (size.height as f32)
+    }
+
+    pub fn logical_size(&self) -> (u32, u32) {
+        let scale = self.gl_window.window().scale_factor();
+        let size : glutin::dpi::LogicalSize<u32> = self.gl_window.window().inner_size().to_logical(scale);
+
+        (size.width, size.height)
     }
 
     pub fn swap_buffers(&self) {
@@ -488,6 +504,65 @@ impl GraphicsContext {
         _prog : LoadedProg,
     ) {
         todo!();
+    }
+
+    fn set_texture_parameters(&self) {
+        unsafe {
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32, // TODO: linear
+            );
+
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32, // TODO: linear
+            );
+
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                // glow::CLAMP_TO_EDGE as i32,
+                glow::REPEAT as i32,
+            );
+
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                // glow::CLAMP_TO_EDGE as i32,
+                glow::REPEAT as i32,
+            );
+        }
+    }
+
+    pub fn texture_2d_image(
+        &self,
+        img : &image::RgbImage,
+    ) -> glow::Texture {
+
+        unsafe {
+            let tex = self.gl.create_texture().unwrap();
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D, // target
+                0, // level
+                glow::RGB as i32, // internalformat
+                img.width() as i32,
+                img.height() as i32,
+                0, // border
+                glow::RGB, // format
+                glow::UNSIGNED_BYTE, // type
+                Some(img.as_raw()), // data
+            );
+
+            self.set_texture_parameters();
+
+            self.gl.bind_texture(glow::TEXTURE_2D, None);
+
+            tex
+        }
     }
 
     pub fn render_scene<U : Uniforms>(
@@ -840,8 +915,10 @@ struct MyApp {
 
     input : WinitInputHelper,
 
-    shadow_map_debug: ShadowMapDebug,
+    shadow_map_debug: TextureDebug,
     shadow_mapper : ShadowMapper,
+
+    grad_tex : glow::Texture,
     // shadow_map_texture: glow::Texture,
 }
 
@@ -889,9 +966,22 @@ impl App for MyApp {
             far : 100.0,
         };
 
-        let shadow_map_debug = ShadowMapDebug::new(ctx);
+        let shadow_map_debug = TextureDebug::new(ctx);
         let shadow_mapper = ShadowMapper::new(ctx);
         // let shadow_map_texture = ctx.load_shadow_map_texture();
+
+        let mut grad = image::RgbImage::new(32, 32);
+        for x in 0u8..32 {
+            for y in 0u8..32 {
+                grad.put_pixel(
+                    x as u32,
+                    y as u32,
+                    image::Rgb([x * 8, y * 8, 0])
+                );
+            }
+        }
+
+        let grad_tex = ctx.texture_2d_image(&grad);
 
         Self{
             values: [0.0;3],
@@ -911,6 +1001,7 @@ impl App for MyApp {
             input : WinitInputHelper::new(),
             shadow_map_debug,
             shadow_mapper,
+            grad_tex,
             // shadow_map_texture,
         }
     }
@@ -1037,7 +1128,6 @@ impl App for MyApp {
             self.camera.position = self.camera_pos.position();
             self.camera.up = self.camera_pos.up();
 
-            /*
             ctx.render_scene(
                 &self.camera,
                 &g,
@@ -1047,36 +1137,47 @@ impl App for MyApp {
                     ("enable_lighting", self.enable_lighting),
                 ][..],
             );
-            */
 
-            let proj = Mat4::orthographic_rh(
-                -10.0,
-                10.0,
-                -10.0,
-                10.0,
-                0.1,
-                100.0,
-            );
+            let proj = if self.bools[2] {
+                Mat4::orthographic_rh(
+                    -1.0, 1.0,
+                    -1.0, 1.0,
+                    0.1, 10.0,
+                )
+            } else {
+                Mat4::perspective_rh(
+                    std::f32::consts::PI / 2.0,
+                    1.0,
+                    0.1,
+                    10.0,
+                )
+            };
 
+            let offset = Vec3::new(0.0, 4.0 * (self.values[1] - 0.5), 0.0);
             let view = Mat4::look_at_rh(
-                Vec3::new(0.0, 0.0, 3.0),
-                Vec3::ZERO,
+                offset + 3.0 * self.values[0] * Vec3::new(0.5, 0.0, 2.0),
+                offset + Vec3::ZERO,
                 Vec3::Y,
             );
+
 
             self.shadow_mapper.render_light(
                 ctx,
                 0,
-                proj * view, // self.camera.projection() * self.camera.view(),
+                // self.camera.projection() * self.camera.view(),
+                proj * view,
                 &g,
                 root_idx,
             );
 
-            self.shadow_map_debug.render(
-                ctx,
-                self.shadow_mapper.tex,
-                0,
-            );
+
+            if self.bools[1] {
+                self.shadow_map_debug.render(
+                    ctx,
+                    self.shadow_mapper.tex,
+                    // self.grad_tex,
+                );
+            }
             /*
             ctx.render_shadow_map(
                 self.shadow_map_texture,

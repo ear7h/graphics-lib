@@ -13,7 +13,7 @@ pub struct Camera {
 
 impl Camera {
     pub fn projection(&self) -> glam::Mat4 {
-        glam::Mat4::perspective_rh_gl(
+        glam::Mat4::perspective_rh(
             self.fov_y,
             self.aspect,
             self.near,
@@ -24,7 +24,7 @@ impl Camera {
     pub fn view(&self) -> glam::Mat4 {
         glam::Mat4::look_at_rh(
             self.position,
-            self.forward,
+            -self.forward,
             self.up,
         )
     }
