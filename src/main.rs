@@ -177,6 +177,7 @@ impl ShadowMapper {
         root : NodeIdx,
     ) {
         unsafe {
+
             ctx.gl.bind_framebuffer(
                 glow::FRAMEBUFFER,
                 Some(self.fbo),
@@ -196,9 +197,6 @@ impl ShadowMapper {
                 // 0, // idx as i32,
             );
 
-            ctx.gl.draw_buffer(glow::NONE);
-            ctx.gl.enable(glow::DEPTH_TEST);
-            ctx.gl.clear(glow::DEPTH_BUFFER_BIT);
 
             let fb_status = ctx.gl.check_framebuffer_status(
                 glow::FRAMEBUFFER
@@ -206,8 +204,18 @@ impl ShadowMapper {
 
             assert_eq!(fb_status, glow::FRAMEBUFFER_COMPLETE);
 
-            ctx.gl.use_program(Some(self.prog.prog));
+            let mut old_vp = [0i32;4];
+            ctx.gl.get_parameter_i32_slice(glow::VIEWPORT,  &mut old_vp);
             ctx.gl.viewport(0, 0, 1024, 1024);
+            ctx.gl.draw_buffer(glow::NONE);
+            ctx.gl.enable(glow::DEPTH_TEST);
+            // I'm not sure where the scissor test is being enabled.
+            // A quick look at egui_glow shows that it is disabled wherever it's
+            // enabled. I should track it down with something like dbg!(check_scisor(ctx))
+            // in various points of the update function
+            ctx.gl.disable(glow::SCISSOR_TEST);
+            ctx.gl.clear(glow::DEPTH_BUFFER_BIT);
+            ctx.gl.use_program(Some(self.prog.prog));
 
             // iterate the objects
             scene.visit_surfaces(
@@ -244,8 +252,8 @@ impl ShadowMapper {
 
             error_check(&ctx.gl);
 
-            let (w, h) = ctx.logical_size();
-            ctx.gl.viewport(0, 0, w as i32, h as i32);
+            let [x, y, w, h] = old_vp;
+            ctx.gl.viewport(x, y, w, h);
             ctx.gl.bind_framebuffer(
                 glow::DRAW_FRAMEBUFFER,
                 None,
@@ -323,7 +331,7 @@ impl GraphicsContext {
 
     pub fn logical_size(&self) -> (u32, u32) {
         let scale = self.gl_window.window().scale_factor();
-        let size : glutin::dpi::LogicalSize<u32> = self.gl_window.window().inner_size().to_logical(scale);
+        let size = self.gl_window.window().inner_size().to_logical(scale);
 
         (size.width, size.height)
     }
@@ -523,15 +531,13 @@ impl GraphicsContext {
             self.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_S,
-                // glow::CLAMP_TO_EDGE as i32,
-                glow::REPEAT as i32,
+                glow::CLAMP_TO_EDGE as i32,
             );
 
             self.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_T,
-                // glow::CLAMP_TO_EDGE as i32,
-                glow::REPEAT as i32,
+                glow::CLAMP_TO_EDGE as i32,
             );
         }
     }
