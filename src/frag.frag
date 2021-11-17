@@ -29,7 +29,7 @@ vec3 homosub(vec4 p, vec4 q) {
     return p.xyz * q.w - q.xyz * p.w;
 }
 
-void main (void){
+void main (void) {
     if (!enable_lighting) {
         fragColor = vec4(0.5f * normalize(normal) + 0.5f, 1.0f);
         return;

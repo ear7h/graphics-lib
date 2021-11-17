@@ -22,6 +22,8 @@ use object::{
     Obj,
 };
 
+mod scene_graph;
+
 use std::io;
 use std::mem::{self, MaybeUninit};
 use std::fs::File;
@@ -173,8 +175,8 @@ impl ShadowMapper {
         ctx : &GraphicsContext,
         idx : usize,
         proj : Mat4,
-        scene : &SceneGraph<Light, Surface>,
-        root : NodeIdx,
+        scene : &scene_graph::SceneGraph<Light, Surface, LoadedObj>,
+        root : scene_graph::NodeHandle,
     ) {
         unsafe {
 
@@ -219,11 +221,11 @@ impl ShadowMapper {
 
             // iterate the objects
             scene.visit_surfaces(
-                proj,
+                &mut scene_graph::Cache::default(),
                 root,
-                &mut |mat, surface : &Surface| {
+                &mut |mat, surface : &Surface, object : &LoadedObj| {
                     let u = &[
-                        ("lightspace", UniformValue::Mat4(mat)),
+                        ("lightspace", UniformValue::Mat4(proj * mat)),
                     ][..];
 
                     u.set_uniforms(&mut UniformSetter{
@@ -233,13 +235,16 @@ impl ShadowMapper {
 
                     error_check(&ctx.gl);
 
-                    ctx.gl.bind_vertex_array(Some(surface.object.vao));
+                    // TODO: the scene graph is optimized to group together
+                    // calls with the same object, only call bind_vertex_array
+                    // when he vao changes
+                    ctx.gl.bind_vertex_array(Some(object.vao));
 
                     error_check(&ctx.gl);
 
                     ctx.gl.draw_elements(
                         glow::TRIANGLES,
-                        surface.object.count as i32,
+                        object.count as i32,
                         glow::UNSIGNED_INT,
                         0
                     );
@@ -574,8 +579,8 @@ impl GraphicsContext {
     pub fn render_scene<U : Uniforms>(
         &self,
         camera : &Camera,
-        scene: &SceneGraph<Light, Surface>,
-        root : NodeIdx,
+        scene: &scene_graph::SceneGraph<Light, Surface, LoadedObj>,
+        root : scene_graph::NodeHandle,
         prog : &LoadedProg,
         extra_uniforms : U,
     ) {
@@ -584,19 +589,22 @@ impl GraphicsContext {
         let mut light_colors = Vec::new();
 
         scene.visit_lights(
-            camera.view(), root, &mut |mat, l|  {
-            match l {
-                Light::Point{position, color} => {
-                    light_positions.push(
-                        mat * *position
-                    );
+            &mut scene_graph::Cache::default(),
+            root,
+            &mut |mat, l|  {
+                match l {
+                    Light::Point{position, color} => {
+                        light_positions.push(
+                            camera.view() * mat * *position
+                        );
 
-                    light_colors.push(*color);
-                },
-                _ => {},
+                        light_colors.push(*color);
+                    },
+                    _ => {},
+                }
+
             }
-
-        });
+        );
 
         struct LightUniforms {
             len : u32,
@@ -677,11 +685,10 @@ impl GraphicsContext {
         error_check(&self.gl);
 
         scene.visit_surfaces(
-            camera.view(),
+            &mut scene_graph::Cache::default(),
             root,
-            &mut |mat, surface : &Surface| {
-
-                uniforms.modelview = mat;
+            &mut |mat, surface : &Surface, object : &LoadedObj| {
+                uniforms.modelview = camera.view() * mat;
                 uniforms.phong = surface.material;
 
                 uniforms.set_uniforms(&mut UniformSetter{
@@ -692,16 +699,15 @@ impl GraphicsContext {
                 error_check(&self.gl);
 
                 unsafe {
-                    self.gl.bind_vertex_array(Some(surface.object.vao));
-                    assert_eq!(
-                        self.gl.get_error(),
-                        glow::NO_ERROR,
-                        "OpenGL error occurred!"
-                    );
+                    // TODO: the scene graph is optimized to group together
+                    // calls with the same object, only call bind_vertex_array
+                    // when he vao changes
+                    self.gl.bind_vertex_array(Some(object.vao));
+                    error_check(&self.gl);
 
                     self.gl.draw_elements(
                         glow::TRIANGLES,
-                        surface.object.count as i32,
+                        object.count as i32,
                         glow::UNSIGNED_INT,
                         0
                     );
@@ -736,75 +742,6 @@ struct Material<T> {
     prog : LoadedProg,
     uniforms : T,
 }
-
-
-
-// M is the surface material
-struct SceneGraph<L, S> {
-    nodes : Vec<Node<L, S>>
-}
-
-impl <L, S> Default for SceneGraph<L, S> {
-    fn default() -> Self {
-        Self{
-            nodes : Vec::new()
-        }
-    }
-}
-
-impl<L, S> SceneGraph<L, S> {
-    pub fn add_branch(
-        &mut self,
-        children : Vec<(Mat4, NodeIdx)>
-    ) -> NodeIdx {
-        self.nodes.push(Node::Branch{children});
-
-        NodeIdx(self.nodes.len() - 1)
-    }
-
-    pub fn add_light(&mut self, l : L) -> NodeIdx {
-        self.nodes.push(Node::Light(l));
-
-        NodeIdx(self.nodes.len() - 1)
-    }
-
-    pub fn add_surface(&mut self, s : S) -> NodeIdx {
-        self.nodes.push(Node::Surface(s));
-
-        NodeIdx(self.nodes.len() - 1)
-    }
-
-    pub fn visit_lights<F>(&self, mat : Mat4, root : NodeIdx, f : &mut F)
-    where
-        F : FnMut(Mat4, &L)
-    {
-        match &self.nodes[root.0] {
-            Node::Light(l) => (f)(mat, &l),
-            Node::Branch{children} => {
-                for child in children {
-                    self.visit_lights(mat * child.0, child.1, f)
-                }
-            },
-            _ => {},
-        }
-    }
-
-    pub fn visit_surfaces<F>(&self, mat : Mat4, root : NodeIdx, f : &mut F)
-    where
-        F : FnMut(Mat4, &S)
-    {
-        match &self.nodes[root.0] {
-            Node::Surface(s) => (f)(mat, &s),
-            Node::Branch{children} => {
-                for child in children {
-                    self.visit_surfaces(mat * child.0, child.1, f)
-                }
-            },
-            _ => {},
-        }
-    }
-}
-
 
 #[derive(Clone, Copy, Default)]
 struct PhongMaterial {
@@ -851,7 +788,7 @@ pub enum Light {
 
 #[derive(Clone, Copy)]
 pub struct Surface {
-    object : LoadedObj,
+    // object : LoadedObj,
     material : PhongMaterial,
 }
 
@@ -1060,28 +997,44 @@ impl App for MyApp {
 
 
             // basic scene graph
-            let mut g = SceneGraph::<Light, Surface>::default();
+            let mut g = scene_graph::SceneGraph::<
+                Light,
+                Surface,
+                LoadedObj
+            >::default();
 
-            let sphere_idx = g.add_surface(Surface{
-                object : self.sphere,
-                material : PhongMaterial::turquoise(),
-            });
+            fn add_object_surface(
+                g : &mut scene_graph::SceneGraph::<Light, Surface, LoadedObj>,
+                object : LoadedObj,
+                surface : Surface,
+            ) -> scene_graph::NodeHandle {
+                let o = g.add_object(object);
+                g.add_surface(surface, o)
+            }
 
-            let teapot_idx = g.add_surface(Surface{
-                object : self.teapot,
-                material : PhongMaterial::turquoise(),
-            });
+            let sphere_idx = add_object_surface(
+                &mut g,
+                self.sphere,
+                Surface{ material : PhongMaterial::turquoise() },
+            );
 
-            let cube_idx = g.add_surface(Surface{
-                object : self.cube,
-                material : PhongMaterial::turquoise(),
-            });
+            let teapot_idx = add_object_surface(
+                &mut g,
+                self.teapot,
+                Surface{ material : PhongMaterial::turquoise() },
+            );
 
-            let bunny_idx = g.add_surface(Surface{
-                object : self.bunny,
-                material : PhongMaterial::turquoise(),
-            });
+            let cube_idx = add_object_surface(
+                &mut g,
+                self.cube,
+                Surface{ material : PhongMaterial::turquoise() },
+            );
 
+            let bunny_idx = add_object_surface(
+                &mut g,
+                self.bunny,
+                Surface{ material : PhongMaterial::turquoise() },
+            );
 
             let l = g.add_light(Light::Point{
                 color : 1.5 * Vec4::new(1.0, 1.0, 1.0, 1.0),
@@ -1092,7 +1045,7 @@ impl App for MyApp {
                 }
             });
 
-            let light_idx = g.add_branch(vec![
+            let light_idx = g.add_branch(&[
                 (
                     Mat4::IDENTITY,
                     l,
@@ -1103,7 +1056,7 @@ impl App for MyApp {
                 ),
             ]);
 
-            let root_idx = g.add_branch(vec![
+            let root_idx = g.add_branch(&[
                 (
                     Mat4::from_translation(Vec3::new(0.8, 0.0, 0.0)),
                     bunny_idx,
