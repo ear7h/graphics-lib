@@ -38,7 +38,16 @@ where
 #[derive(QuickFrom, Clone)]
 pub enum UniformValue<'a> {
     #[quick_from]
-    Int(u32),
+    Int(i32),
+
+    #[quick_from]
+    Uint(u32),
+
+    #[quick_from]
+    Intv(&'a [i32]),
+
+    #[quick_from]
+    Uintv(&'a [u32]),
 
     #[quick_from]
     Bool(bool),
@@ -73,7 +82,8 @@ impl UniformValue<'_> {
         use UniformValue::*;
 
         match self {
-            Int(_) => glow::INT,
+            Int(_) | Intv(_) => glow::INT,
+            Uint(_) | Uintv(_)  => glow::INT,
             Bool(_) => glow::BOOL,
             Float(_) => glow::FLOAT,
 
@@ -110,13 +120,31 @@ impl UniformValue<'_> {
             Int(val) =>  {
                 gl.uniform_1_i32_slice(
                     Some(&loc),
-                    bytemuck::cast_slice(&[val])
+                    &[val],
+                )
+            },
+            Uint(val) =>  {
+                gl.uniform_1_u32_slice(
+                    Some(&loc),
+                    &[val],
+                )
+            },
+            Intv(val) =>  {
+                gl.uniform_1_i32_slice(
+                    Some(&loc),
+                    val,
+                )
+            },
+            Uintv(val) =>  {
+                gl.uniform_1_u32_slice(
+                    Some(&loc),
+                    val,
                 )
             },
             Bool(val) =>  {
                 gl.uniform_1_i32_slice(
                     Some(&loc),
-                    bytemuck::cast_slice(&[if val { 1 } else { 0 }])
+                    &[if val { 1 } else { 0 }],
                 )
             },
             Float(val) =>  {
@@ -214,10 +242,10 @@ impl<'a> UniformSetter<'a> {
             }
         };
 
-        /*
+        /* TODO: handle samplers
         if meta.0.utype != val.gl_type() {
             panic!(
-                "destination type mismatch {}, expected {} got {}",
+                "destination type mismatch {}, expected {:x} got {:x}",
                 name,
                 meta.0.utype,
                 val.gl_type(),
