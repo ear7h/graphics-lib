@@ -121,7 +121,6 @@ impl TextureDebug {
 
 struct ShadowMapper {
     prog : LoadedProg,
-//    tex : glow::Texture,
     fbo : glow::Framebuffer,
 }
 
@@ -352,30 +351,6 @@ impl ShadowMapper {
             error_check(&ctx.gl);
         }
     }
-
-    /*
-    fn render(
-        &self,
-        ctx : &GraphicsContext,
-        scene : &SceneGraph<Light, Surface>,
-        root : NodeIdx,
-    ) {
-
-        let mut idx = 0;
-        scene.visit_lights(
-            Mat4::IDENTITY, root, &mut |mat, l| {
-            let (color, forward) =
-                if let Light::Direction{color, forward} = l {
-                    (color, forward)
-                } else {
-                    return
-                };
-
-
-        });
-
-    }
-        */
 }
 
 type GlutinContext = glutin::ContextWrapper<
@@ -750,6 +725,7 @@ impl GraphicsContext {
             }
         );
 
+        // TODO: move this to the cache
         let mut texture_loads = Vec::new();
         let mut texture_unit = 0i32..;
 
@@ -773,6 +749,9 @@ impl GraphicsContext {
                     let tex = cache.alloc_shadow_texture(self);
                     let lightspace = proj * mat;
 
+                    // TODO?: the shadow mapper uses a texture unit which is known
+                    // to us (currently unit 0), so we could start loading
+                    // texture units right away
                     cache.shadow_mapper.render_light(
                         self,
                         // camera.view(),
