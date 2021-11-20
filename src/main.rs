@@ -220,13 +220,13 @@ impl ShadowMapper {
             ctx.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_S,
-                glow::CLAMP_TO_EDGE as i32,
+                glow::CLAMP_TO_BORDER as i32,
             );
 
             ctx.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_T,
-                glow::CLAMP_TO_EDGE as i32,
+                glow::CLAMP_TO_BORDER as i32,
             );
 
             ctx.gl.bind_texture(
@@ -256,6 +256,7 @@ impl ShadowMapper {
         &self,
         ctx : &GraphicsContext,
         // idx : usize,
+        // view : Mat4,
         tex : glow::Texture,
         lightspace : Mat4,
         scene : &scene_graph::SceneGraph<Light, Surface, LoadedObj>,
@@ -308,7 +309,7 @@ impl ShadowMapper {
                 root,
                 &mut |mat, _ : &Surface, object : &LoadedObj| {
                     let u = &[
-                        ("lightspace", UniformValue::Mat4(lightspace * mat)),
+                        ("lightspace", UniformValue::Mat4(lightspace * mat )),
                     ][..];
 
                     u.set_uniforms(&mut UniformSetter{
@@ -738,46 +739,31 @@ impl GraphicsContext {
                 lights.len += 1;
 
                 lights.positions.push(
-                    camera.view() * mat * Vec4::W,
+                    mat * l.view() * Vec4::W,
                 );
 
                 lights.colors.push(
                     l.color(),
                 );
 
-                shadows.push((mat, l.shadow()));
-
-                /*
-                match l {
-                    Light::Point{position, color} => {
-                        light_positions.push(
-                            camera.view() * mat * *position
-                        );
-
-                        light_colors.push(*color);
-                    },
-                    _ => {},
-                }
-                */
+                shadows.push((l.view() * mat.inverse(), l.shadow()));
             }
         );
 
-        let mut texture_unit : i32 = 0;
+        let mut texture_loads = Vec::new();
+        let mut texture_unit = 0i32..;
 
-        unsafe {
-            let tex = cache.alloc_shadow_none_texture(self);
-            self.gl.active_texture(glow::TEXTURE0);
-            self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-        }
+        let none_texture_unit = texture_unit.next().unwrap();
 
-        let none_texture_unit = texture_unit;
-
-        texture_unit += 1;
+        texture_loads.push((
+                none_texture_unit,
+                cache.alloc_shadow_none_texture(self),
+        ));
 
         for (mat, shadow) in shadows.drain(..) {
             match shadow {
                 Shadow::None(proj) => {
-                    let lightspace = proj * mat.inverse();
+                    let lightspace = proj * mat;
 
                     lights.lightspaces.push(lightspace);
                     lights.shadows.push(none_texture_unit);
@@ -785,36 +771,30 @@ impl GraphicsContext {
                 Shadow::Plane(proj) => {
 
                     let tex = cache.alloc_shadow_texture(self);
-                    let lightspace = proj * mat.inverse();
+                    let lightspace = proj * mat;
 
                     cache.shadow_mapper.render_light(
                         self,
+                        // camera.view(),
                         tex,
                         lightspace,
                         scene,
                         root,
                     );
 
-                    unsafe {
-                        self.gl.active_texture(glow::TEXTURE0 + (texture_unit as u32));
-                        self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-                    }
+                    let unit = texture_unit.next().unwrap();
+
+                    texture_loads.push((
+                            unit,
+                            tex,
+                    ));
 
                     lights.lightspaces.push(lightspace);
-                    lights.shadows.push(texture_unit);
-
-                    texture_unit += 1;
+                    lights.shadows.push(unit);
                 },
             }
         }
 
-        for unit in 0..texture_unit {
-            unsafe {
-                let tex = cache.alloc_shadow_none_texture(self);
-                self.gl.active_texture(glow::TEXTURE0 + (unit as u32));
-                self.gl.bind_texture(glow::TEXTURE_2D, None);
-            }
-        }
 
         struct SceneUniforms<U> {
             // position and color
@@ -823,7 +803,8 @@ impl GraphicsContext {
             projection : glam::Mat4,
             inited : Cell<bool>,
 
-            modelview : glam::Mat4,
+            model : glam::Mat4,
+            view : glam::Mat4,
             phong : PhongMaterial,
             extra : U,
         }
@@ -849,6 +830,7 @@ impl GraphicsContext {
                     self.extra.set_uniforms(s);
 
 
+                    set_slice!(lights.lightspaces);
                     set_slice!(lights.shadows);
                     set_slice!(lights.positions);
                     set_slice!(lights.colors);
@@ -858,7 +840,8 @@ impl GraphicsContext {
                     self.inited.set(true);
                 }
 
-                set!(modelview);
+                set!(model);
+                set!(view);
                 set!(projection);
                 set!(phong.ambient);
                 set!(phong.diffuse);
@@ -873,7 +856,8 @@ impl GraphicsContext {
             projection : camera.projection(),
             inited : Default::default(),
 
-            modelview : glam::Mat4::IDENTITY,
+            view : camera.view(),
+            model : glam::Mat4::IDENTITY,
             phong : Default::default(),
             extra : extra_uniforms,
         };
@@ -882,15 +866,23 @@ impl GraphicsContext {
         unsafe {
             self.gl.use_program(Some(prog.prog));
             self.gl.enable(glow::DEPTH_TEST);
+
+            for (unit, tex) in texture_loads {
+                self.gl.active_texture(glow::TEXTURE0 + (unit as u32));
+                self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                error_check(&self.gl);
+            }
         }
 
         error_check(&self.gl);
+
+        let mut prev_vao = None;
 
         scene.visit_surfaces(
             &mut scene_graph::Cache::default(),
             root,
             &mut |mat, surface : &Surface, object : &LoadedObj| {
-                uniforms.modelview = camera.view() * mat;
+                uniforms.model = mat;
                 uniforms.phong = surface.material;
 
                 uniforms.set_uniforms(&mut UniformSetter{
@@ -901,11 +893,21 @@ impl GraphicsContext {
                 error_check(&self.gl);
 
                 unsafe {
-                    // TODO: the scene graph is optimized to group together
-                    // calls with the same object, only call bind_vertex_array
-                    // when he vao changes
-                    self.gl.bind_vertex_array(Some(object.vao));
-                    error_check(&self.gl);
+                    // TODO: benchmark this optimization
+                    //
+                    // the scene graph is optimized to group together calls
+                    // with the same object
+                    //
+                    // note: to benchmark this, a new naive scene graph needs
+                    // to be implemented, not just removing the conditional,
+                    // because the underlying OpenGL implementation might
+                    // have this check as well
+                    let vao = Some(object.vao);
+                    if vao != prev_vao {
+                        self.gl.bind_vertex_array(vao);
+                        prev_vao = vao;
+                        error_check(&self.gl);
+                    }
 
                     self.gl.draw_elements(
                         glow::TRIANGLES,
@@ -918,6 +920,11 @@ impl GraphicsContext {
         );
 
         unsafe {
+            for unit in 0..texture_unit.next().unwrap() {
+                self.gl.active_texture(glow::TEXTURE0 + (unit as u32));
+                self.gl.bind_texture(glow::TEXTURE_2D, None);
+            }
+
             self.gl.use_program(None);
             self.gl.bind_vertex_array(None);
             self.gl.disable(glow::DEPTH_TEST);
@@ -987,6 +994,7 @@ pub enum Light {
     Spot{
         shadow : bool,
         color : glam::Vec4,
+        forward : glam::Vec3,
         angle : f32,
         near : f32,
         far : f32,
@@ -1001,6 +1009,21 @@ pub enum Shadow{
 }
 
 impl Light {
+    fn view(&self) -> glam::Mat4 {
+        use Light::*;
+
+        match self {
+            Spot{forward, ..} => {
+                Mat4::look_at_rh(
+                    Vec3::ZERO,
+                    *forward,
+                    forward.any_orthogonal_vector(),
+                )
+            },
+            _ => Mat4::IDENTITY,
+        }
+    }
+
     fn color(&self) -> glam::Vec4 {
         use Light::*;
 
@@ -1010,6 +1033,7 @@ impl Light {
             | Spot{color, ..} => *color,
         }
     }
+
     fn shadow(&self) -> Shadow {
         use Light::*;
         match self {
@@ -1214,7 +1238,7 @@ impl App for MyApp {
         Self{
             values: [0.0;3],
             bools: [false;3],
-            enable_lighting : false,
+            enable_lighting : true,
             sphere,
             cube,
             teapot,
@@ -1323,13 +1347,14 @@ impl App for MyApp {
             );
 
             let l = g.add_light(Light::Point{
-                color : Vec4::new(1.0, 1.0, 1.0, 1.0),
+                color : if self.bools[0] { 1.0 } else { 0.0 } * Vec4::new(1.0, 1.0, 1.0, 1.0),
                 shadow : false,
             });
 
 
             let light_idx = g.add_branch(&[
                 (
+                    /*
                     if self.bools[0] {
                         // put light at infinity
                         Mat4::from_cols_array_2d(&[
@@ -1341,6 +1366,8 @@ impl App for MyApp {
                     } else {
                         Mat4::IDENTITY
                     },
+                    */
+                    Mat4::IDENTITY,
                     l,
                 ),
                 (
@@ -1349,10 +1376,9 @@ impl App for MyApp {
                 ),
             ]);
 
-            let offset = Vec3::new(0.0, 4.0 * (self.values[1] - 0.5), 0.0);
             let sl = g.add_light(if self.bools[2] {
                 Light::Directional{
-                    color : Vec4::new(1.0, 1.0, 1.0, 1.0),
+                    color : Vec4::new(1.0, 0.0, 1.0, 1.0),
                     shadow : true,
                     left : -1.0, right : 1.0,
                     bottom : -1.0, top : 1.0,
@@ -1360,7 +1386,8 @@ impl App for MyApp {
                 }
             } else {
                 Light::Spot{
-                    color : Vec4::new(1.0, 1.0, 1.0, 1.0),
+                    color : Vec4::new(1.0, 0.0, 1.0, 1.0),
+                    forward : -Vec3::Z,
                     shadow : true,
                     angle : PI / 2.0,
                     near : 1.0,
@@ -1394,11 +1421,9 @@ impl App for MyApp {
                     light_idx,
                 ),
                 (
-                    Mat4::look_at_rh(
-                        offset + 3.0 * self.values[0] * Vec3::new(0.5, 0.0, 2.0),
-                        offset + Vec3::ZERO,
-                        Vec3::Y,
-                    ).inverse(),
+                    Mat4::from_translation(
+                        Vec3::new(0.0, 4.0 * (self.values[0] - 0.5), 10.0 * (self.values[1] - 0.5)),
+                    ),
                     sl,
                 )
             ]);
@@ -1418,35 +1443,13 @@ impl App for MyApp {
                 ][..],
             );
 
-
-
-            /*
-            self.shadow_mapper.render_light(
-                ctx,
-                0,
-                // self.camera.projection() * self.camera.view(),
-                proj * view,
-                &g,
-                root_idx,
-            );
-
-            */
-
             if self.bools[1] {
                 self.shadow_map_debug.render(
                     ctx,
-                    self.render_cache.shadow_textures[0],
+                    dbg!(self.render_cache.shadow_textures[0]),
                     // self.grad_tex,
                 );
             }
-
-            /*
-            ctx.render_shadow_map(
-                self.shadow_map_texture,
-                0,
-            );
-
-            */
 
             ctx.render_egui(|ctx| {
                 egui::SidePanel::left("left_panel")

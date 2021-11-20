@@ -5,8 +5,6 @@ in vec3 normal;
 
 out vec4 fragColor;
 
-uniform mat4 modelview;
-
 uniform struct {
     vec4 ambient;
     vec4 diffuse;
@@ -31,10 +29,14 @@ vec3 homosub(vec4 p, vec4 q) {
     return p.xyz * q.w - q.xyz * p.w;
 }
 
+vec3 dehomo(vec4 p) {
+    return p.xyz / p.w;
+}
+
 #define CASE(N) case N: \
     return texture(lights.shadows[N], uv).x;
 
-// TODO: handle this, probably with texture2DArray
+// TODO: remove this attrocity, probably with texture2DArray
 float shadow_texture(vec2 uv, int idx) {
     switch (idx) {
         CASE(0)
@@ -60,12 +62,13 @@ void main (void) {
 
     fragColor = phong.emission;
 
-
     for (int i = 0; i < lights.len; i++) {
         float shadow = 1.0;
-        vec4 lightspace = lights.lightspaces[i] * vec4(position, 1.0);
-        // sampler2DArray depth = lights.shadows[i];
-        if (shadow_texture(lightspace.xy, i) < lightspace.z) {
+
+        vec3 lightspace = dehomo(lights.lightspaces[i] * vec4(position, 1.0)) * 0.5 +
+            vec3(0.5);
+
+        if (shadow_texture(lightspace.xy, i) < lightspace.z - 0.005f || lightspace.z < 0.005f) {
             shadow = 0.0;
         }
 

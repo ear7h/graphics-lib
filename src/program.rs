@@ -75,6 +75,13 @@ pub enum UniformValue<'a> {
     Mat3(glam::Mat3),
     #[quick_from]
     Mat4(glam::Mat4),
+
+    #[quick_from]
+    Mat2v(&'a [glam::Mat2]),
+    #[quick_from]
+    Mat3v(&'a [glam::Mat3]),
+    #[quick_from]
+    Mat4v(&'a [glam::Mat4]),
 }
 
 impl UniformValue<'_> {
@@ -91,9 +98,9 @@ impl UniformValue<'_> {
             Vec3(_) | Vec3v(_) => glow::FLOAT_VEC3,
             Vec4(_) | Vec4v(_) => glow::FLOAT_VEC4,
 
-            Mat2(_) => glow::FLOAT_MAT2,
-            Mat3(_) => glow::FLOAT_MAT3,
-            Mat4(_) => glow::FLOAT_MAT4,
+            Mat2(_) | Mat2v(_) => glow::FLOAT_MAT2,
+            Mat3(_) | Mat3v(_) => glow::FLOAT_MAT3,
+            Mat4(_) | Mat4v(_) => glow::FLOAT_MAT4,
         }
     }
 
@@ -104,6 +111,9 @@ impl UniformValue<'_> {
             Vec2v(v) => v.len(),
             Vec3v(v) => v.len(),
             Vec4v(v) => v.len(),
+            Mat2v(v) => v.len(),
+            Mat3v(v) => v.len(),
+            Mat4v(v) => v.len(),
             _ => 1,
         }
     }
@@ -192,6 +202,7 @@ impl UniformValue<'_> {
                     bytemuck::cast_slice(&[val])
                 )
             },
+
             Vec2v(val) =>  {
                 gl.uniform_2_f32_slice(
                     Some(&loc),
@@ -207,6 +218,28 @@ impl UniformValue<'_> {
             Vec4v(val) =>  {
                 gl.uniform_4_f32_slice(
                     Some(&loc),
+                    bytemuck::cast_slice(val)
+                )
+            },
+
+            Mat2v(val) =>  {
+                gl.uniform_matrix_2_f32_slice(
+                    Some(&loc),
+                    false,
+                    bytemuck::cast_slice(val)
+                )
+            },
+            Mat3v(val) =>  {
+                gl.uniform_matrix_3_f32_slice(
+                    Some(&loc),
+                    false,
+                    bytemuck::cast_slice(val)
+                )
+            },
+            Mat4v(val) =>  {
+                gl.uniform_matrix_4_f32_slice(
+                    Some(&loc),
+                    false,
                     bytemuck::cast_slice(val)
                 )
             },
