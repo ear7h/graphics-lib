@@ -84,9 +84,11 @@ mod test {
 
         let mut visited = Vec::new();
 
-        g.visit_lights(
+        Scene::new(
+            &mut g,
+            &[(Mat4::IDENTITY, Node::Handle(root))],
             &mut Default::default(),
-            root,
+        ).visit_lights(
             &mut |model, params| {
                 visited.push((model, *params));
             }
@@ -221,9 +223,11 @@ mod test {
 
         let mut visited = Vec::new();
 
-        g.visit_surfaces(
+        Scene::new(
+            &mut g,
+            &[(Mat4::IDENTITY, Node::Handle(root))],
             &mut Default::default(),
-            root,
+        ).visit_surfaces(
             &mut |model, params, object| {
                 visited.push((model, *params, *object));
             }
@@ -255,7 +259,7 @@ mod test {
             ),
         ]);
 
-        let b = g.add_branch(&[
+        let b1 = g.add_branch(&[
             (
                 trans1,
                 b,
@@ -274,26 +278,53 @@ mod test {
             ),
         ]);
 
-        let mut cache = Cache::default();
-        g.fill_cache(&mut cache, b);
+        let b2 = g.add_branch(&[
+            (
+                scale,
+                b1,
+            ),
+        ]);
 
-        assert_eq!(cache.root, Some(b));
+        let mut cache = Cache::default();
+        Scene::new(
+            &mut g,
+            &[
+                (Mat4::IDENTITY, Node::Handle(b1)),
+                (Mat4::IDENTITY, Node::Handle(b2)),
+            ],
+            &mut cache,
+        ).fill_cache();
+
+        use Reach::*;
+
         assert_eq!(
             cache.nodes,
             vec![
-                true,
-                false,
-                true,
-                true,
-                false,
+                Reached,
+                None,
+                Reached,
+                RootReached,
+                None,
+                Root,
             ].into_iter().map(Some).collect::<Vec<_>>(),
         );
     }
 }
 
 
+pub enum Node<L, S> {
+    Light(L),
+    Surface(ObjectHandle, S),
+    Handle(NodeHandle),
+}
 
-enum Node<L, S> {
+impl<L, S> From<NodeHandle> for Node<L, S> {
+    fn from(handle : NodeHandle) -> Node<L, S> {
+        Node::Handle(handle)
+    }
+}
+
+enum NodeInternal<L, S> {
     Light{
         params : L,
         parents : Vec<(Mat4, NodeHandle)>,
@@ -307,9 +338,9 @@ enum Node<L, S> {
     },
 }
 
-impl<L, S> Node<L, S> {
+impl<L, S> NodeInternal<L, S> {
     fn parents_mut(&mut self) -> &mut Vec<(Mat4, NodeHandle)> {
-        use Node::*;
+        use NodeInternal::*;
 
         match self {
             Light{parents, ..} => parents,
@@ -319,7 +350,7 @@ impl<L, S> Node<L, S> {
     }
 
     fn parents(&self) -> &[(Mat4, NodeHandle)] {
-        use Node::*;
+        use NodeInternal::*;
 
         match self {
             Light{parents, ..} => parents,
@@ -340,134 +371,87 @@ pub struct ObjectHandle(usize);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NodeHandle(usize);
 
-pub struct SceneGraph<L, S, O> {
-    objects : Vec<Object<O>>,
-    nodes : Vec<Node<L, S>>,
+pub struct Scene<'a, L, S, O> {
+    scene_graph : &'a SceneGraph<L, S, O>,
+    roots : &'a [(Mat4, Node<L, S>)],
+    cache : &'a mut Cache,
 }
 
-impl<L, S, O> Default for SceneGraph<L, S, O> {
-    fn default() -> Self {
-        Self{
-            objects : Vec::new(),
-            nodes : Vec::new(),
-        }
+impl<'a, L, S, O> Scene<'a, L, S, O> {
+    pub fn new(
+        scene_graph: &'a SceneGraph<L, S, O> ,
+        roots : &'a [(Mat4, Node<L, S>)],
+        cache : &'a mut Cache,
+    ) -> Self {
+        let mut ret = Self{ scene_graph, roots, cache };
+        ret.fill_cache();
+        ret
     }
-}
-
-#[derive(Default)]
-pub struct Cache {
-    root : Option<NodeHandle>,
-    nodes : Vec<Option<bool>>,
-}
-
-impl<L, S, O> SceneGraph<L, S, O> {
 
     fn fill_cache_rec(
-        &self,
-        cache : &mut Cache,
-        root : NodeHandle,
+        &mut self,
         cur : NodeHandle,
-    ) -> bool {
-        if cur == root {
-            cache.nodes[cur.0] = Some(true);
-            return true
-        }
-
-        if let Some(cached) = cache.nodes[cur.0] {
+    ) -> Reach {
+        if let Some(cached) = self.cache.nodes[cur.0] {
             return cached
         }
 
-        for (_, parent) in self.nodes[cur.0].parents() {
-            if cache.nodes[parent.0] == Some(true) || self.fill_cache_rec(cache, root, *parent) {
-                cache.nodes[cur.0] = Some(true);
-                return true
-            }
+        let mut reach = false;
+
+        for (_, parent) in self.scene_graph.nodes[cur.0].parents() {
+            use Reach::*;
+
+            let r = if let Some(r) = self.cache.nodes[parent.0] {
+                r
+            } else {
+                self.fill_cache_rec(*parent)
+            };
+
+            match r {
+                None => continue,
+                Reached | RootReached | Root => {
+                    reach = true;
+                    break;
+                }
+            };
         }
 
-        cache.nodes[cur.0] = Some(false);
-        false
+        let is_root = self.roots.iter().any(|(_, node)| {
+            matches!(
+                node,
+                Node::Handle(handle) if *handle == cur,
+            )
+        });
+
+        use Reach::*;
+
+        let val = match (reach, is_root) {
+            (false, false) => None,
+            (true,  false) => Reached,
+            (false, true)  => Root,
+            (true,  true)  => RootReached,
+        };
+
+        self.cache.nodes[cur.0] = Some(val);
+        val
     }
 
+    /// This should only be called from `new`
     fn fill_cache(
-        &self,
-        cache : &mut Cache,
-        root : NodeHandle,
+        &mut self,
     ) {
-        if cache.root != Some(root) ||
-            cache.nodes.len() != self.nodes.len()
-        {
-            cache.root = Some(root);
-            cache.nodes.clear(); // TODO: is this necessary?
-            cache.nodes.resize_with(self.nodes.len(), || None);
-        }
+        self.cache.nodes.clear();
+        self.cache.nodes.resize_with(self.scene_graph.nodes.len(), || None);
 
-        for idx in 0..self.nodes.len() {
+        for idx in 0..self.scene_graph.nodes.len() {
             self.fill_cache_rec(
-                cache,
-                root,
                 NodeHandle(idx),
             );
         }
     }
 
-    fn visit_lights_rec<F>(
-        &self,
-        cache : &mut Cache,
-        root : NodeHandle,
-        params : &L,
-        cur : NodeHandle,
-        trans : Mat4,
-        f : &mut F
-    )
-    where
-        F : FnMut(Mat4, &L)
-    {
-        if root == cur {
-            f(trans, params);
-            return
-        } else if cache.nodes[cur.0].unwrap() {
-            for (trans_next, next) in self.nodes[cur.0].parents().iter().copied() {
-                self.visit_lights_rec(
-                    cache,
-                    root,
-                    params,
-                    next,
-                    trans_next * trans,
-                    f,
-                );
-            }
-        }
-    }
-
-    pub fn visit_lights<F>(
-        &self,
-        cache : &mut Cache,
-        root : NodeHandle,
-        f : &mut F,
-    )
-    where
-        F : FnMut(Mat4, &L)
-    {
-        self.fill_cache(cache, root);
-
-        for (idx, node) in self.nodes.iter().enumerate() {
-            if let Node::Light{params,..} = node {
-                self.visit_lights_rec(
-                    cache,
-                    root,
-                    params,
-                    NodeHandle(idx),
-                    Mat4::IDENTITY,
-                    f,
-                );
-            }
-        }
-    }
-
     fn visit_surfaces_rec<F>(
         &self,
-        cache : &mut Cache,
-        root : NodeHandle,
         params : &S,
         object : &O,
         cur : NodeHandle,
@@ -477,14 +461,34 @@ impl<L, S, O> SceneGraph<L, S, O> {
     where
         F : FnMut(Mat4, &S, &O)
     {
-        if root == cur {
-            f(trans, params, object);
-            return
-        } else if cache.nodes[cur.0].unwrap() {
-            for (trans_next, next) in self.nodes[cur.0].parents().iter().copied() {
+        use Reach::*;
+
+        let r = self.cache.nodes[cur.0]
+            .expect("all nodes should have a reach value");
+
+        if matches!(r, Root | RootReached) {
+            let it = self.roots
+                .iter()
+                .filter_map(|(mat, node)| {
+                    matches!(
+                        node,
+                        Node::Handle(handle) if *handle == cur
+                    ).then(|| mat)
+                });
+
+            for mat in it  {
+                f(*mat * trans, params, object);
+            }
+        }
+
+        if matches!(r, Reached | RootReached) {
+            let parents = self.scene_graph.nodes[cur.0]
+                .parents()
+                .iter()
+                .copied();
+
+            for (trans_next, next) in parents {
                 self.visit_surfaces_rec(
-                    cache,
-                    root,
                     params,
                     object,
                     next,
@@ -497,33 +501,148 @@ impl<L, S, O> SceneGraph<L, S, O> {
 
     pub fn visit_surfaces<F>(
         &self,
-        cache : &mut Cache,
-        root : NodeHandle,
         f : &mut F,
     )
     where
         F : FnMut(Mat4, &S, &O)
     {
-        self.fill_cache(cache, root);
+        let it = self.scene_graph.objects.iter().enumerate();
 
-        for Object{object, parents} in self.objects.iter() {
-            for handle in parents.iter().copied() {
-                if let Node::Surface{params, ..} = &self.nodes[handle.0] {
+        for (idx, Object{object, parents}) in it {
+            for (mat, node) in self.roots {
+                match node {
+                    Node::Surface(o, params) if o.0 == idx => {
+                        f(*mat, params, object)
+                    },
+                    _ => {}
+                }
+            }
+
+            for handle in parents {
+                let node = &self.scene_graph.nodes[handle.0];
+                if let NodeInternal::Surface{params, ..} = node {
                     self.visit_surfaces_rec(
-                        cache,
-                        root,
                         params,
                         object,
-                        handle,
+                        *handle,
                         Mat4::IDENTITY,
                         f
                     );
                 } else {
-                    unreachable!("node pointed by Object.parent should be surface");
+                    unreachable!(
+                        "node pointed by Object.parent should be surface"
+                    );
                 }
+
             }
         }
     }
+
+    fn visit_lights_rec<F>(
+        &self,
+        params : &L,
+        cur : NodeHandle,
+        trans : Mat4,
+        f : &mut F
+    )
+    where
+        F : FnMut(Mat4, &L)
+    {
+        use Reach::*;
+
+        let r = self.cache.nodes[cur.0].unwrap();
+
+        if matches!(r, Root | RootReached) {
+            let it = self.roots
+                .iter()
+                .filter_map(|(mat, node)| {
+                    matches!(
+                        node,
+                        Node::Handle(handle) if *handle == cur
+                    ).then(|| mat)
+                });
+
+            for mat in it {
+                f(*mat * trans, params);
+            }
+        }
+
+        if matches!(r, Reached | RootReached) {
+            let parents = self.scene_graph.nodes[cur.0]
+                .parents()
+                .iter()
+                .copied();
+
+            for (trans_next, next) in parents {
+                self.visit_lights_rec(
+                    params,
+                    next,
+                    trans_next * trans,
+                    f,
+                );
+            }
+        }
+    }
+
+    pub fn visit_lights<F>(
+        &self,
+        f : &mut F,
+    )
+    where
+        F : FnMut(Mat4, &L)
+    {
+        for (mat, node) in self.roots {
+            if let Node::Light(params) = node {
+                f(*mat, params);
+            }
+        }
+
+        for (idx, node) in self.scene_graph.nodes.iter().enumerate() {
+            if let NodeInternal::Light{params,..} = node {
+                self.visit_lights_rec(
+                    params,
+                    NodeHandle(idx),
+                    Mat4::IDENTITY,
+                    f,
+                );
+            }
+        }
+    }
+}
+
+pub struct SceneGraph<L, S, O> {
+    objects : Vec<Object<O>>,
+    nodes : Vec<NodeInternal<L, S>>,
+}
+
+impl<L, S, O> Default for SceneGraph<L, S, O> {
+    fn default() -> Self {
+        Self{
+            objects : Vec::new(),
+            nodes : Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    // The node is not reached by a root
+    None,
+    // The node is reached by a root
+    Reached,
+    // The node is a root AND IS NOT reached by another root
+    Root,
+    // The node is a root AND IS reached by another root
+    RootReached,
+}
+
+#[derive(Default)]
+pub struct Cache {
+    root : Option<NodeHandle>,
+    nodes : Vec<Option<Reach>>,
+}
+
+impl<L, S, O> SceneGraph<L, S, O> {
 
     pub fn add_object(&mut self, object : O) -> ObjectHandle {
         self.objects.push(Object{
@@ -534,13 +653,13 @@ impl<L, S, O> SceneGraph<L, S, O> {
         ObjectHandle(self.objects.len() - 1)
     }
 
-    fn add_node(&mut self, node : Node<L, S>) -> NodeHandle {
+    fn add_node(&mut self, node : NodeInternal<L, S>) -> NodeHandle {
         self.nodes.push(node);
         NodeHandle(self.nodes.len() - 1)
     }
 
     pub fn add_surface(&mut self, params : S, object : ObjectHandle) -> NodeHandle {
-        let handle = self.add_node(Node::Surface{
+        let handle = self.add_node(NodeInternal::Surface{
             params,
             parents : Vec::new(),
         });
@@ -551,14 +670,14 @@ impl<L, S, O> SceneGraph<L, S, O> {
     }
 
     pub fn add_light(&mut self, params : L) -> NodeHandle {
-        self.add_node(Node::Light{
+        self.add_node(NodeInternal::Light{
             params,
             parents : Vec::new(),
         })
     }
 
     pub fn add_branch(&mut self, children : &[(Mat4, NodeHandle)]) -> NodeHandle {
-        let handle = self.add_node(Node::Branch{
+        let handle = self.add_node(NodeInternal::Branch{
             parents : Vec::new(),
         });
 
@@ -568,4 +687,5 @@ impl<L, S, O> SceneGraph<L, S, O> {
 
         handle
     }
+
 }

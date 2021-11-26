@@ -23,6 +23,11 @@ use object::{
 };
 
 mod scene_graph;
+use scene_graph::{
+    NodeHandle,
+    SceneGraph,
+    Node,
+};
 
 use std::io;
 use std::mem::{self, MaybeUninit};
@@ -258,8 +263,7 @@ impl ShadowMapper {
         // view : Mat4,
         tex : glow::Texture,
         lightspace : Mat4,
-        scene : &scene_graph::SceneGraph<Light, Surface, LoadedObj>,
-        root : scene_graph::NodeHandle,
+        scene : &scene_graph::Scene<'_, Light, Surface, LoadedObj>,
     ) {
         unsafe {
 
@@ -304,8 +308,6 @@ impl ShadowMapper {
 
             // iterate the objects
             scene.visit_surfaces(
-                &mut scene_graph::Cache::default(),
-                root,
                 &mut |mat, _ : &Surface, object : &LoadedObj| {
                     let u = &[
                         ("lightspace", UniformValue::Mat4(lightspace * mat )),
@@ -382,7 +384,11 @@ impl RenderCache {
         self.shadow_none_textures_idx = 0;
     }
 
-    fn alloc_shadow_texture(&mut self, ctx : &GraphicsContext) -> glow::Texture {
+    fn alloc_shadow_texture(
+        &mut self,
+        ctx : &GraphicsContext
+    ) -> glow::Texture {
+
         assert!(self.shadow_textures.len() >= self.shadow_textures_idx);
         if self.shadow_textures.len() > self.shadow_textures_idx {
             self.shadow_textures[self.shadow_textures_idx]
@@ -410,7 +416,10 @@ pub struct GraphicsContext {
 }
 
 impl GraphicsContext {
-    pub fn render_egui<T>(&mut self, mut f : impl FnMut(&egui::CtxRef) -> T) -> T {
+    pub fn render_egui<T>(
+        &mut self,
+        mut f : impl FnMut(&egui::CtxRef) -> T
+    ) -> T {
         self.egui.begin_frame(self.gl_window.window());
 
         let ret = (f)(self.egui.ctx());
@@ -629,13 +638,13 @@ impl GraphicsContext {
             self.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32, // TODO: linear
+                glow::LINEAR as i32,
             );
 
             self.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32, // TODO: linear
+                glow::LINEAR as i32,
             );
 
             self.gl.tex_parameter_i32(
@@ -681,12 +690,33 @@ impl GraphicsContext {
         }
     }
 
+    pub fn clear(&self, r : f32, g : f32, b : f32, a : f32) {
+        unsafe {
+            self.gl.clear_color(r, g, b, a);
+            self.gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+        }
+    }
+
+    /// major, minor
+    pub fn gl_version(&self) -> (i32, i32) {
+        unsafe {
+            let major = self.gl.get_parameter_i32(
+                glow::MAJOR_VERSION,
+            );
+
+            let minor = self.gl.get_parameter_i32(
+                glow::MAJOR_VERSION,
+            );
+
+            (major, minor)
+        }
+    }
+
     pub fn render_scene<U : Uniforms>(
         &self,
         cache : &mut RenderCache,
         camera : &Camera,
-        scene: &scene_graph::SceneGraph<Light, Surface, LoadedObj>,
-        root : scene_graph::NodeHandle,
+        scene: &scene_graph::Scene<'_, Light, Surface, LoadedObj>,
         prog : &LoadedProg,
         extra_uniforms : U,
     ) {
@@ -708,8 +738,6 @@ impl GraphicsContext {
         let mut lights = LightUniforms::default();
 
         scene.visit_lights(
-            &mut scene_graph::Cache::default(),
-            root,
             &mut |mat, l|  {
                 lights.len += 1;
 
@@ -758,7 +786,6 @@ impl GraphicsContext {
                         tex,
                         lightspace,
                         scene,
-                        root,
                     );
 
                     let unit = texture_unit.next().unwrap();
@@ -858,8 +885,6 @@ impl GraphicsContext {
         let mut prev_vao = None;
 
         scene.visit_surfaces(
-            &mut scene_graph::Cache::default(),
-            root,
             &mut |mat, surface : &Surface, object : &LoadedObj| {
                 uniforms.model = mat;
                 uniforms.phong = surface.material;
@@ -1065,16 +1090,6 @@ pub struct Surface {
     material : PhongMaterial,
 }
 
-enum Node<L, S> {
-    Light(L),
-    Surface(S),
-    Branch{
-        children : Vec<(Mat4, NodeIdx)>,
-    }
-}
-
-#[derive(Clone, Copy)]
-struct NodeIdx(usize);
 
 #[derive(Clone, Copy, Debug)]
 pub struct SphereCoord {
@@ -1113,16 +1128,89 @@ trait App {
     );
 }
 
+struct MyScene {
+    graph : SceneGraph<Light, Surface, LoadedObj>,
+    // cache : scene_graph::Cache,
+
+    sphere : NodeHandle,
+    cube : NodeHandle,
+    bunny : NodeHandle,
+    teapot : NodeHandle,
+}
+
+impl MyScene {
+    fn new(ctx : &mut GraphicsContext) -> Self {
+        let f = File::open("models/teapot.obj").unwrap();
+        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
+        let teapot = ctx.load_object(&obj);
+
+        let f = File::open("models/sphere.obj").unwrap();
+        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
+        let sphere = ctx.load_object(&obj);
+
+        let f = File::open("models/bunny.obj").unwrap();
+        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
+        let bunny = ctx.load_object(&obj);
+
+        let cube = ctx.load_object(&Obj::cube());
+
+        let mut g = scene_graph::SceneGraph::<
+            Light,
+            Surface,
+            LoadedObj
+        >::default();
+
+        fn add_object_surface(
+            g : &mut scene_graph::SceneGraph::<Light, Surface, LoadedObj>,
+            object : LoadedObj,
+            surface : Surface,
+        ) -> scene_graph::NodeHandle {
+            let o = g.add_object(object);
+            g.add_surface(surface, o)
+        }
+
+        let sphere = add_object_surface(
+            &mut g,
+            sphere,
+            Surface{ material : PhongMaterial::turquoise() },
+        );
+
+        let teapot = add_object_surface(
+            &mut g,
+            teapot,
+            Surface{ material : PhongMaterial::turquoise() },
+        );
+
+        let cube = add_object_surface(
+            &mut g,
+            cube,
+            Surface{ material : PhongMaterial::turquoise() },
+        );
+
+        let bunny = add_object_surface(
+            &mut g,
+            bunny,
+            Surface{ material : PhongMaterial::turquoise() },
+        );
+
+        Self {
+            graph : g,
+            // cache : Default::default(),
+            sphere,
+            cube,
+            bunny,
+            teapot,
+        }
+    }
+}
+
+
+
 struct MyApp {
     values : [f32; 3],
     bools : [bool; 3],
 
     enable_lighting : bool,
-
-    sphere : LoadedObj,
-    cube : LoadedObj,
-    teapot : LoadedObj,
-    bunny : LoadedObj,
 
     prog : LoadedProg,
 
@@ -1138,6 +1226,8 @@ struct MyApp {
 
     grad_tex : glow::Texture,
     // shadow_map_texture: glow::Texture,
+
+    scene : MyScene,
 }
 
 impl App for MyApp {
@@ -1146,32 +1236,8 @@ impl App for MyApp {
 
         ctx.set_title("game-engine");
 
-        unsafe {
-            let major = ctx.gl.get_parameter_i32(
-                glow::MAJOR_VERSION,
-            );
-
-            let minor = ctx.gl.get_parameter_i32(
-                glow::MAJOR_VERSION,
-            );
-
-            println!("OpenGL version: {}.{}", major, minor);
-        }
-
-
-        let f = File::open("models/teapot.obj").unwrap();
-        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
-        let teapot = ctx.load_object(&obj);
-
-        let f = File::open("models/sphere.obj").unwrap();
-        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
-        let sphere = ctx.load_object(&obj);
-
-        let f = File::open("models/bunny.obj").unwrap();
-        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
-        let bunny = ctx.load_object(&obj);
-
-        let cube = ctx.load_object(&Obj::cube());
+        let (major, minor) = ctx.gl_version();
+        println!("OpenGL version: {}.{}", major, minor);
 
         let prog_res = ctx.load_program(
             &std::fs::read_to_string("vert.vert").unwrap(),
@@ -1218,10 +1284,6 @@ impl App for MyApp {
             values: [0.0;3],
             bools: [false;3],
             enable_lighting : true,
-            sphere,
-            cube,
-            teapot,
-            bunny,
             prog,
             camera,
             camera_pos : SphereCoord {
@@ -1235,6 +1297,7 @@ impl App for MyApp {
             shadow_mapper,
             grad_tex,
             // shadow_map_texture,
+            scene : MyScene::new(ctx),
         }
     }
 
@@ -1279,58 +1342,26 @@ impl App for MyApp {
         }
 
         if is_redraw_event(&event) {
-            unsafe {
-                ctx.gl.clear_color(0.1, 0.1, 0.1, 1.0);
-                ctx.gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-            }
+            ctx.clear(0.1, 0.1, 0.1, 1.0);
 
+            let bulb_mat = Mat4::from_translation(Vec3::new(
+                    0.0,
+                    3.0,
+                    3.0,
+            ));
 
-            // basic scene graph
-            let mut g = scene_graph::SceneGraph::<
-                Light,
-                Surface,
-                LoadedObj
-            >::default();
-
-            fn add_object_surface(
-                g : &mut scene_graph::SceneGraph::<Light, Surface, LoadedObj>,
-                object : LoadedObj,
-                surface : Surface,
-            ) -> scene_graph::NodeHandle {
-                let o = g.add_object(object);
-                g.add_surface(surface, o)
-            }
-
-            let sphere_idx = add_object_surface(
-                &mut g,
-                self.sphere,
-                Surface{ material : PhongMaterial::turquoise() },
+            let bulb_light = Node::Light(
+                Light::Point{
+                    color : if self.bools[0] {
+                        1.0
+                    } else {
+                        0.0
+                    } * Vec4::new(1.0, 1.0, 1.0, 1.0),
+                    shadow : false,
+                },
             );
 
-            let teapot_idx = add_object_surface(
-                &mut g,
-                self.teapot,
-                Surface{ material : PhongMaterial::turquoise() },
-            );
-
-            let cube_idx = add_object_surface(
-                &mut g,
-                self.cube,
-                Surface{ material : PhongMaterial::turquoise() },
-            );
-
-            let bunny_idx = add_object_surface(
-                &mut g,
-                self.bunny,
-                Surface{ material : PhongMaterial::turquoise() },
-            );
-
-            let l = g.add_light(Light::Point{
-                color : if self.bools[0] { 1.0 } else { 0.0 } * Vec4::new(1.0, 1.0, 1.0, 1.0),
-                shadow : false,
-            });
-
-
+            /*
             let light_idx = g.add_branch(&[
                 (
                     /*
@@ -1354,8 +1385,9 @@ impl App for MyApp {
                     cube_idx,
                 ),
             ]);
+                    */
 
-            let sl = g.add_light(if self.bools[2] {
+            let spotlight = Node::Light(if self.bools[2] {
                 Light::Directional{
                     color : Vec4::new(1.0, 0.0, 1.0, 1.0),
                     shadow : true,
@@ -1374,14 +1406,18 @@ impl App for MyApp {
                 }
             });
 
-            let root_idx = g.add_branch(&[
+            let roots = &[
                 (
                     Mat4::from_translation(Vec3::new(0.8, 0.0, 0.0)),
-                    bunny_idx,
+                    self.scene.bunny.into(),
                 ),
                 (
-                    Mat4::from_translation(Vec3::new(-0.8, 0.1, -4.0)),
-                    teapot_idx,
+                    Mat4::from_translation(Vec3::new(
+                            -0.8,
+                            0.1 + 2.0 * self.values[2],
+                            -4.0
+                    )),
+                    self.scene.teapot.into(),
                 ),
                 (
                     Mat4::from_scale_rotation_translation(
@@ -1389,33 +1425,41 @@ impl App for MyApp {
                         glam::Quat::IDENTITY,
                         Vec3::new(0.0, -1.5, 0.0)
                     ),
-                    sphere_idx,
+                    self.scene.sphere.into(),
                 ),
                 (
-                    Mat4::from_translation(Vec3::new(
-                            0.0,
-                            3.0,
-                            3.0,
-                    )),
-                    light_idx,
+                    bulb_mat,
+                    bulb_light,
+                ),
+                (
+                    bulb_mat,
+                    self.scene.cube.into(),
                 ),
                 (
                     Mat4::from_translation(
-                        Vec3::new(0.0, 4.0 * (self.values[0] - 0.5), 10.0 * (self.values[1] - 0.5)),
+                        Vec3::new(
+                            0.0,
+                            4.0 * (self.values[0] - 0.5),
+                            10.0 * (self.values[1] - 0.5)
+                        ),
                     ),
-                    sl,
+                    spotlight,
                 )
-            ]);
+            ];
 
             self.camera.aspect = ctx.aspect();
             self.camera.position = self.camera_pos.position();
             self.camera.up = self.camera_pos.up();
 
+
             ctx.render_scene(
                 &mut self.render_cache,
                 &self.camera,
-                &g,
-                root_idx,
+                &scene_graph::Scene::new(
+                    &self.scene.graph,
+                    roots,
+                    &mut Default::default(),
+                ),
                 &self.prog,
                 &[
                     ("enable_lighting", self.enable_lighting),
