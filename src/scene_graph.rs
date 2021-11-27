@@ -1,10 +1,9 @@
 use glam::Mat4;
-use glam::Vec3;
-use std::cell::RefCell;
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use glam::Vec3;
 
     #[test]
     fn lights_1() {
@@ -312,6 +311,7 @@ mod test {
 }
 
 
+#[derive(Debug, Clone, Copy)]
 pub enum Node<L, S> {
     Light(L),
     Surface(ObjectHandle, S),
@@ -365,7 +365,7 @@ struct Object<O> {
     parents : Vec<NodeHandle>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct ObjectHandle(usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -638,7 +638,6 @@ enum Reach {
 
 #[derive(Default)]
 pub struct Cache {
-    root : Option<NodeHandle>,
     nodes : Vec<Option<Reach>>,
 }
 

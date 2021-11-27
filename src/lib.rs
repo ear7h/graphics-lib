@@ -1,14 +1,12 @@
-#![allow(unused_imports, dead_code)]
-
-mod camera;
+pub mod camera;
 use camera::*;
 
-mod utils;
+pub mod utils;
 use utils::{
     create_display,
 };
 
-mod program;
+pub mod program;
 use program::{
     LoadedProg,
     Uniforms,
@@ -16,55 +14,31 @@ use program::{
     UniformSetter,
 };
 
-mod object;
+pub mod object;
 use object::{
     LoadedObj,
     Obj,
 };
 
-mod scene_graph;
-use scene_graph::{
-    NodeHandle,
-    SceneGraph,
-    Node,
-};
+pub mod scene_graph;
 
-use std::io;
-use std::mem::{self, MaybeUninit};
-use std::fs::File;
-use std::rc::Rc;
 use std::cell::Cell;
-use std::f32::consts::PI;
-
-use winit_input_helper::WinitInputHelper;
-
-
-use bytemuck::{
-    Pod,
-};
 
 use glam::{
-    Vec3A,
     Vec3,
     Vec4,
     Mat4,
-    Vec4Swizzles,
 };
 
 use glow::HasContext;
 
-const MAX_LIGHTS : usize = 10;
-const MAX_SHADOWS : usize = 10;
-
-
-
-struct TextureDebug {
+pub struct TextureDebug {
     prog : LoadedProg,
     plane : LoadedObj,
 }
 
 impl TextureDebug {
-    fn new(ctx : &GraphicsContext) -> Self {
+    pub fn new(ctx : &GraphicsContext) -> Self {
         println!("texture debug");
         let prog = ctx.load_program(
             include_str!("shaders/texture_dbg.vert"),
@@ -78,11 +52,15 @@ impl TextureDebug {
         Self{prog, plane}
     }
 
-    fn render(
+    pub fn render(
         &self,
         ctx : &GraphicsContext,
-        tex : glow::Texture,
+        // tex : glow::Texture,
+        cache : &RenderCache,
+        shadow_idx : usize,
     ) {
+        let tex = cache.shadow_textures[shadow_idx];
+
         unsafe {
 
             ctx.gl.use_program(Some(self.prog.prog));
@@ -124,7 +102,7 @@ impl TextureDebug {
     }
 }
 
-struct ShadowMapper {
+pub struct ShadowMapper {
     prog : LoadedProg,
     fbo : glow::Framebuffer,
 }
@@ -242,7 +220,7 @@ impl ShadowMapper {
         }
     }
 
-    fn new(ctx : &GraphicsContext) -> Self {
+    pub fn new(ctx : &GraphicsContext) -> Self {
         let prog = ctx.load_program(
             include_str!("shaders/shadow.vert"),
             include_str!("shaders/shadow.frag"),
@@ -308,7 +286,11 @@ impl ShadowMapper {
 
             // iterate the objects
             scene.visit_surfaces(
-                &mut |mat, _ : &Surface, object : &LoadedObj| {
+                &mut |mat, s : &Surface, object : &LoadedObj| {
+                    if !s.cast_shadow {
+                        return
+                    }
+
                     let u = &[
                         ("lightspace", UniformValue::Mat4(lightspace * mat )),
                     ][..];
@@ -951,18 +933,13 @@ fn error_check(gl : &glow::Context) {
 }
 
 
-struct Material<T> {
-    prog : LoadedProg,
-    uniforms : T,
-}
-
 #[derive(Clone, Copy, Default)]
-struct PhongMaterial {
-    ambient : glam::Vec4,
-    diffuse : glam::Vec4,
-    specular : glam::Vec4,
-    emission : glam::Vec4,
-    shininess : f32,
+pub struct PhongMaterial {
+    pub ambient : glam::Vec4,
+    pub diffuse : glam::Vec4,
+    pub specular : glam::Vec4,
+    pub emission : glam::Vec4,
+    pub shininess : f32,
 }
 
 impl PhongMaterial {
@@ -1086,36 +1063,11 @@ impl Light {
 
 #[derive(Clone, Copy)]
 pub struct Surface {
-    // object : LoadedObj,
-    material : PhongMaterial,
+    pub cast_shadow : bool,
+    pub material : PhongMaterial,
 }
 
-
-#[derive(Clone, Copy, Debug)]
-pub struct SphereCoord {
-    r : f32,
-    theta : f32,
-    phi : f32,
-}
-
-impl SphereCoord {
-    fn matrix(&self) -> Mat4 {
-        Mat4::from_axis_angle(Vec3::Y, self.phi) *
-        Mat4::from_axis_angle(Vec3::X, -self.theta)
-    }
-
-    fn position(&self) -> Vec3 {
-        self.matrix().transform_point3(Vec3::Z * self.r)
-    }
-
-    fn up(&self) -> Vec3 {
-        self.matrix().transform_vector3(Vec3::Y)
-    }
-}
-
-
-
-trait App {
+pub trait App {
     // load shaders, textures, etc.
     fn init(ctx : &mut GraphicsContext) -> Self;
 
@@ -1128,410 +1080,6 @@ trait App {
     );
 }
 
-struct MyScene {
-    graph : SceneGraph<Light, Surface, LoadedObj>,
-    // cache : scene_graph::Cache,
-
-    sphere : NodeHandle,
-    cube : NodeHandle,
-    bunny : NodeHandle,
-    teapot : NodeHandle,
-}
-
-impl MyScene {
-    fn new(ctx : &mut GraphicsContext) -> Self {
-        let f = File::open("models/teapot.obj").unwrap();
-        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
-        let teapot = ctx.load_object(&obj);
-
-        let f = File::open("models/sphere.obj").unwrap();
-        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
-        let sphere = ctx.load_object(&obj);
-
-        let f = File::open("models/bunny.obj").unwrap();
-        let obj = Obj::parse(io::BufReader::new(f)).unwrap();
-        let bunny = ctx.load_object(&obj);
-
-        let cube = ctx.load_object(&Obj::cube());
-
-        let mut g = scene_graph::SceneGraph::<
-            Light,
-            Surface,
-            LoadedObj
-        >::default();
-
-        fn add_object_surface(
-            g : &mut scene_graph::SceneGraph::<Light, Surface, LoadedObj>,
-            object : LoadedObj,
-            surface : Surface,
-        ) -> scene_graph::NodeHandle {
-            let o = g.add_object(object);
-            g.add_surface(surface, o)
-        }
-
-        let sphere = add_object_surface(
-            &mut g,
-            sphere,
-            Surface{ material : PhongMaterial::turquoise() },
-        );
-
-        let teapot = add_object_surface(
-            &mut g,
-            teapot,
-            Surface{ material : PhongMaterial::turquoise() },
-        );
-
-        let cube = add_object_surface(
-            &mut g,
-            cube,
-            Surface{ material : PhongMaterial::turquoise() },
-        );
-
-        let bunny = add_object_surface(
-            &mut g,
-            bunny,
-            Surface{ material : PhongMaterial::turquoise() },
-        );
-
-        Self {
-            graph : g,
-            // cache : Default::default(),
-            sphere,
-            cube,
-            bunny,
-            teapot,
-        }
-    }
-}
-
-
-
-struct MyApp {
-    values : [f32; 3],
-    bools : [bool; 3],
-
-    enable_lighting : bool,
-
-    prog : LoadedProg,
-
-    camera : Camera,
-    camera_pos : SphereCoord,
-
-    input : WinitInputHelper,
-
-    render_cache : RenderCache,
-
-    shadow_map_debug: TextureDebug,
-    shadow_mapper : ShadowMapper,
-
-    grad_tex : glow::Texture,
-    // shadow_map_texture: glow::Texture,
-
-    scene : MyScene,
-}
-
-impl App for MyApp {
-    fn init(ctx : &mut GraphicsContext) -> Self {
-        // try frame buffer
-
-        ctx.set_title("game-engine");
-
-        let (major, minor) = ctx.gl_version();
-        println!("OpenGL version: {}.{}", major, minor);
-
-        let prog_res = ctx.load_program(
-            &std::fs::read_to_string("vert.vert").unwrap(),
-            &std::fs::read_to_string("frag.frag").unwrap(),
-        );
-
-        let prog = match prog_res {
-            Ok(v) => v,
-            Err(s) => {
-                println!("SHADER ERROR: ");
-                println!("{}", s);
-                std::process::exit(1);
-            }
-        };
-
-        let camera = Camera {
-            position : glam::Vec3::new(0.0, 0.0, 5.0),
-            forward : glam::Vec3::new(0.0, 0.0, 0.0),
-            up : glam::Vec3::new(0.0, 1.0, 0.0),
-            fov_y : std::f32::consts::PI / 2.0,
-            aspect : 1.0,
-            near : 0.01,
-            far : 100.0,
-        };
-
-        let shadow_map_debug = TextureDebug::new(ctx);
-        let shadow_mapper = ShadowMapper::new(ctx);
-        // let shadow_map_texture = ctx.load_shadow_map_texture();
-
-        let mut grad = image::RgbImage::new(32, 32);
-        for x in 0u8..32 {
-            for y in 0u8..32 {
-                grad.put_pixel(
-                    x as u32,
-                    y as u32,
-                    image::Rgb([x * 8, y * 8, 0])
-                );
-            }
-        }
-
-        let grad_tex = ctx.texture_2d_image(&grad);
-
-        Self{
-            values: [0.0;3],
-            bools: [false;3],
-            enable_lighting : true,
-            prog,
-            camera,
-            camera_pos : SphereCoord {
-                r : 5.0,
-                theta: 0.0,
-                phi : 0.0,
-            },
-            input : WinitInputHelper::new(),
-            render_cache : RenderCache::new(ctx),
-            shadow_map_debug,
-            shadow_mapper,
-            grad_tex,
-            // shadow_map_texture,
-            scene : MyScene::new(ctx),
-        }
-    }
-
-    fn update(
-        &mut self,
-        event : glutin::event::Event<'_, ()>,
-        ctx : &mut GraphicsContext,
-        control_flow : &mut glutin::event_loop::ControlFlow,
-    ) {
-        let mut quit = false;
-
-        if self.input.update(&event) {
-            use glutin::event::VirtualKeyCode;
-
-            let input = &self.input;
-
-            if input.key_pressed(VirtualKeyCode::Q) {
-                quit = true;
-            }
-
-            if input.key_pressed(VirtualKeyCode::L) {
-                self.enable_lighting = !self.enable_lighting;
-            }
-
-            const DELTA : f32 = 0.5;
-
-            if input.key_pressed(VirtualKeyCode::Up) {
-                self.camera_pos.theta += DELTA;
-            }
-
-            if input.key_pressed(VirtualKeyCode::Down) {
-                self.camera_pos.theta -= DELTA;
-            }
-
-            if input.key_pressed(VirtualKeyCode::Right) {
-                self.camera_pos.phi += DELTA;
-            }
-
-            if input.key_pressed(VirtualKeyCode::Left) {
-                self.camera_pos.phi -= DELTA;
-            }
-        }
-
-        if is_redraw_event(&event) {
-            ctx.clear(0.1, 0.1, 0.1, 1.0);
-
-            let bulb_mat = Mat4::from_translation(Vec3::new(
-                    0.0,
-                    3.0,
-                    3.0,
-            ));
-
-            let bulb_light = Node::Light(
-                Light::Point{
-                    color : if self.bools[0] {
-                        1.0
-                    } else {
-                        0.0
-                    } * Vec4::new(1.0, 1.0, 1.0, 1.0),
-                    shadow : false,
-                },
-            );
-
-            /*
-            let light_idx = g.add_branch(&[
-                (
-                    /*
-                    if self.bools[0] {
-                        // put light at infinity
-                        Mat4::from_cols_array_2d(&[
-                            [1.0, 0.0, 0.0, 0.0],
-                            [0.0, 1.0, 0.0, 0.0],
-                            [0.0, 0.0, 1.0, 0.0],
-                            [0.0, 1.0, 1.0, 0.0],
-                        ])
-                    } else {
-                        Mat4::IDENTITY
-                    },
-                    */
-                    Mat4::IDENTITY,
-                    l,
-                ),
-                (
-                    Mat4::IDENTITY,
-                    cube_idx,
-                ),
-            ]);
-                    */
-
-            let spotlight = Node::Light(if self.bools[2] {
-                Light::Directional{
-                    color : Vec4::new(1.0, 0.0, 1.0, 1.0),
-                    shadow : true,
-                    left : -1.0, right : 1.0,
-                    bottom : -1.0, top : 1.0,
-                    near : 0.1, far : 10.0,
-                }
-            } else {
-                Light::Spot{
-                    color : Vec4::new(1.0, 0.0, 1.0, 1.0),
-                    forward : -Vec3::Z,
-                    shadow : true,
-                    angle : PI / 2.0,
-                    near : 1.0,
-                    far : 10.0,
-                }
-            });
-
-            let roots = &[
-                (
-                    Mat4::from_translation(Vec3::new(0.8, 0.0, 0.0)),
-                    self.scene.bunny.into(),
-                ),
-                (
-                    Mat4::from_translation(Vec3::new(
-                            -0.8,
-                            0.1 + 2.0 * self.values[2],
-                            -4.0
-                    )),
-                    self.scene.teapot.into(),
-                ),
-                (
-                    Mat4::from_scale_rotation_translation(
-                        Vec3::new(4.0, 0.1, 4.0),
-                        glam::Quat::IDENTITY,
-                        Vec3::new(0.0, -1.5, 0.0)
-                    ),
-                    self.scene.sphere.into(),
-                ),
-                (
-                    bulb_mat,
-                    bulb_light,
-                ),
-                (
-                    bulb_mat,
-                    self.scene.cube.into(),
-                ),
-                (
-                    Mat4::from_translation(
-                        Vec3::new(
-                            0.0,
-                            4.0 * (self.values[0] - 0.5),
-                            10.0 * (self.values[1] - 0.5)
-                        ),
-                    ),
-                    spotlight,
-                )
-            ];
-
-            self.camera.aspect = ctx.aspect();
-            self.camera.position = self.camera_pos.position();
-            self.camera.up = self.camera_pos.up();
-
-
-            ctx.render_scene(
-                &mut self.render_cache,
-                &self.camera,
-                &scene_graph::Scene::new(
-                    &self.scene.graph,
-                    roots,
-                    &mut Default::default(),
-                ),
-                &self.prog,
-                &[
-                    ("enable_lighting", self.enable_lighting),
-                ][..],
-            );
-
-            if self.bools[1] {
-                self.shadow_map_debug.render(
-                    ctx,
-                    dbg!(self.render_cache.shadow_textures[0]),
-                    // self.grad_tex,
-                );
-            }
-
-            ctx.render_egui(|ctx| {
-                egui::SidePanel::left("left_panel")
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.heading("hello world");
-                    quit = ui.button("Quit").clicked();
-
-
-                    let pos = &mut self.camera_pos;
-
-                    ui.label("r");
-                    ui.add(egui::Slider::new(&mut pos.r, 0.0..=20.0));
-
-                    ui.label("phi");
-                    ui.add(egui::Slider::new(
-                            &mut pos.phi,
-                            -PI..=PI,
-                    ));
-
-                    ui.label("theta");
-                    ui.add(egui::Slider::new(
-                            &mut pos.theta,
-                            0.0..=2.0 * PI
-                    ));
-
-
-                    ui.checkbox(&mut self.enable_lighting, "lighting");
-
-
-                    ui.separator();
-
-                    ui.label("values");
-
-                    for v in self.values.iter_mut() {
-                        ui.add(egui::Slider::new(
-                                v,
-                                0.0..=1.0
-                        ));
-                    }
-
-                    ui.label("bools");
-
-                    for v in self.bools.iter_mut() {
-                        ui.checkbox(v, "");
-                    }
-                });
-            });
-
-            ctx.swap_buffers();
-        }
-
-        *control_flow = if quit {
-            glutin::event_loop::ControlFlow::Exit
-        } else {
-            glutin::event_loop::ControlFlow::Wait
-        };
-    }
-}
 
 pub fn is_keyboard_event<'a, T>(
     event: &'a glutin::event::Event<'_, T>
@@ -1559,12 +1107,7 @@ pub fn is_redraw_event<T>(event : &glutin::event::Event<'_, T>) -> bool {
     }
 }
 
-
-fn main() {
-    run::<MyApp>();
-}
-
-fn run<A : App + 'static>() {
+pub fn run<A : App + 'static>() {
     println!("Hello, world!");
 
 
@@ -1603,3 +1146,4 @@ fn run<A : App + 'static>() {
         a.update(event, &mut render_ctx, control_flow);
     });
 }
+

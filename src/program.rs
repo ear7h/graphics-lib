@@ -85,6 +85,8 @@ pub enum UniformValue<'a> {
 }
 
 impl UniformValue<'_> {
+    // TODO: handle samplers
+    #[allow(dead_code)]
     pub(crate) fn gl_type(&self) -> u32 {
         use UniformValue::*;
 

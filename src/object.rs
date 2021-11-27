@@ -10,6 +10,8 @@ pub enum Error {
     ObjFormat(usize),
 }
 
+// TODO: free the VBOs
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct LoadedObj {
     pub(crate) vao : glow::NativeVertexArray,
@@ -29,7 +31,6 @@ impl Obj {
     pub fn plane() -> Self {
 
         use glam::{
-            Vec3,
             const_vec3,
         };
 
@@ -62,10 +63,7 @@ impl Obj {
 
     pub fn cube() -> Self {
 
-        use glam::{
-            Vec3,
-            const_vec3,
-        };
+        use glam::const_vec3;
 
         const VERTICES : [Vec3;24] = [
             // Front face
