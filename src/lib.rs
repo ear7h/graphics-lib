@@ -854,6 +854,8 @@ impl GraphicsContext {
         unsafe {
             self.gl.use_program(Some(prog.prog));
             self.gl.enable(glow::DEPTH_TEST);
+            let (w, h) = self.logical_size();
+            self.gl.viewport(0, 0, w.try_into().unwrap(), h.try_into().unwrap());
 
             for (unit, tex) in texture_loads {
                 self.gl.active_texture(glow::TEXTURE0 + (unit as u32));

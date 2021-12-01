@@ -138,7 +138,7 @@ impl Scene {
 
         let gray = PhongMaterial {
             ambient : Vec4::new(0.1, 0.1, 0.1, 1.0),
-            diffuse : Vec4::new(0.8, 0.8, 0.8, 1.0),
+            diffuse : Vec4::new(0.3, 0.3, 0.3, 1.0),
             specular : Vec4::new(0.2, 0.2, 0.2, 1.0),
             emission : glam::Vec4::W,
             shininess : 50.0,
@@ -189,6 +189,7 @@ struct Demo1 {
     bools : [bool; 3],
 
     enable_lighting : bool,
+    enable_gui : bool,
 
     prog : LoadedProg,
 
@@ -245,6 +246,7 @@ impl App for Demo1 {
             values: [0.0;3],
             bools: [false;3],
             enable_lighting : true,
+            enable_gui : true,
             prog,
             camera,
             camera_pos : SphereCoord {
@@ -272,6 +274,10 @@ impl App for Demo1 {
             use glutin::event::VirtualKeyCode;
 
             let input = &self.input;
+
+            if input.key_pressed(VirtualKeyCode::H) {
+                self.enable_gui = !self.enable_gui;
+            }
 
             if input.key_pressed(VirtualKeyCode::Q) {
                 quit = true;
@@ -400,12 +406,15 @@ impl App for Demo1 {
             }
 
             ctx.render_egui(|ctx| {
+                if !self.enable_gui {
+                    return
+                }
+
                 egui::SidePanel::left("left_panel")
                 .resizable(true)
                 .show(ctx, |ui| {
                     ui.heading("City Demo");
                     quit = ui.button("Quit").clicked();
-
 
                     let pos = &mut self.camera_pos;
 
