@@ -7,14 +7,10 @@ stdenv.mkDerivation {
     gdb
   ];
 
-  buildInputs = [
-    xorg.libxcb
-  ];
-
   # set the LD_LIBRARY_PATH so that the program can find wayland gui libs
   shellHook = ''
-    export LD_LIBRARY_PATH=/run/opengl-driver/lib/:${
-      lib.makeLibraryPath [ wayland libGL libxkbcommon xorg.libxcb ]
+    export LD_LIBRARY_PATH=${
+      lib.makeLibraryPath [ wayland libGL libxkbcommon ]
     }
   '';
 }
