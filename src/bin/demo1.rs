@@ -69,7 +69,12 @@ impl Scene {
 
         let mut g = SceneGraph::default();
 
+        #[cfg(feature = "static")]
+        let f = include_str!("../models/sphere.obj").as_bytes();
+
+        #[cfg(not(feature = "static"))]
         let f = File::open("models/sphere.obj").unwrap();
+
         let obj = Obj::parse(io::BufReader::new(f)).unwrap();
         let sphere = g.add_object(
             ctx.load_object(&obj)
@@ -216,6 +221,13 @@ impl App for Demo1 {
         let (major, minor) = ctx.gl_version();
         println!("OpenGL version: {}.{}", major, minor);
 
+        #[cfg(feature = "static")]
+        let prog_res = ctx.load_program(
+            include_str!("../vert.vert"),
+            include_str!("../frag.frag"),
+        );
+
+        #[cfg(not(feature = "static"))]
         let prog_res = ctx.load_program(
             &std::fs::read_to_string("vert.vert").unwrap(),
             &std::fs::read_to_string("frag.frag").unwrap(),
