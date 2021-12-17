@@ -1,4 +1,4 @@
-use game_engine::*;
+use graphics_lib::*;
 
 use camera::*;
 
@@ -320,7 +320,7 @@ impl App for Demo1 {
 
         let now = Instant::now();
         // TODO: laptop can't handle 60fps + user input
-        let next_draw = self.time + (Duration::from_secs(1) / 60);
+        let next_draw = self.time + (Duration::from_secs(1) / 120);
 
         if is_redraw_event(&event) || (self.bools[0] && now >= next_draw) {
             ctx.clear(0.1, 0.1, 0.1, 1.0);
@@ -398,8 +398,7 @@ impl App for Demo1 {
             ctx.render_scene(
                 &mut self.render_cache,
                 &self.camera,
-                &scene_graph::Scene::new(
-                    &self.scene.graph,
+                &self.scene.graph.visit(
                     &roots,
                     &mut Default::default(),
                 ),

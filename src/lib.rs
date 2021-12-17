@@ -22,6 +22,8 @@ use object::{
 
 pub mod scene_graph;
 
+const MAX_SHADOWS : i32 = 10;
+
 use std::cell::Cell;
 
 use glam::{
@@ -55,12 +57,9 @@ impl TextureDebug {
     pub fn render(
         &self,
         ctx : &GraphicsContext,
-        // tex : glow::Texture,
         cache : &RenderCache,
-        shadow_idx : usize,
+        shadow_idx : u32,
     ) {
-        let tex = cache.shadow_textures[shadow_idx];
-
         unsafe {
 
             ctx.gl.use_program(Some(self.prog.prog));
@@ -69,14 +68,17 @@ impl TextureDebug {
             error_check(&ctx.gl);
 
             ctx.gl.active_texture(glow::TEXTURE0);
-            ctx.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            ctx.gl.bind_texture(
+                glow::TEXTURE_2D_ARRAY,
+                Some(cache.shadow_texture)
+            );
             // bind a sampler object?
 
-            let u = &[
+            let u : &[(&str, UniformValue)] = &[
                 ("tex", UniformValue::Int(0)),
                 ("near", UniformValue::Float(0.1)),
                 ("far", UniformValue::Float(10.0)),
-                // ("idx", idx as u32),
+                ("idx", shadow_idx.into()),
             ][..];
 
             u.set_uniforms(&mut UniformSetter{
@@ -108,113 +110,86 @@ pub struct ShadowMapper {
 }
 
 impl ShadowMapper {
-    fn new_none_texture(ctx : &GraphicsContext) -> glow::Texture {
-        unsafe {
-            let tex = ctx.gl.create_texture().unwrap();
-
-            ctx.gl.bind_texture(
-                glow::TEXTURE_2D,
-                Some(tex),
-            );
-
-            ctx.gl.tex_image_2d(
-                glow::TEXTURE_2D, // target
-                0, // level
-                glow::DEPTH_COMPONENT24 as i32, // internalformat
-                1, // width
-                1, // heigh
-                // MAX_SHADOWS as i32,
-                0, // border
-                glow::DEPTH_COMPONENT, // format
-                glow::FLOAT, // type
-                Some(bytemuck::cast_slice(&[f32::INFINITY])), // data
-            );
-
-            ctx.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32, // TODO: linear
-            );
-
-            ctx.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32, // TODO: linear
-            );
-
-            // no need to set border color since it defaults to 0.0
-
-            ctx.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_S,
-                glow::CLAMP_TO_BORDER as i32,
-            );
-
-            ctx.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_T,
-                glow::CLAMP_TO_BORDER as i32,
-            );
-
-            ctx.gl.bind_texture(
-                glow::TEXTURE_2D,
-                None,
-            );
-
-            tex
-        }
-    }
-
     fn new_texture(ctx : &GraphicsContext) -> glow::Texture {
         unsafe {
             let tex = ctx.gl.create_texture().unwrap();
 
             ctx.gl.bind_texture(
-                glow::TEXTURE_2D,
+                glow::TEXTURE_2D_ARRAY,
                 Some(tex),
             );
 
-            ctx.gl.tex_image_2d(
-                glow::TEXTURE_2D, // target
+            error_check(&ctx.gl);
+
+            ctx.gl.tex_image_3d(
+                glow::TEXTURE_2D_ARRAY, // target
                 0, // level
                 glow::DEPTH_COMPONENT24 as i32, // internalformat
                 1024, // width
                 1024, // heigh
-                // MAX_SHADOWS as i32,
+                MAX_SHADOWS as i32, // depth
                 0, // border
                 glow::DEPTH_COMPONENT, // format
                 glow::FLOAT, // type
                 None, // data
             );
 
+            error_check(&ctx.gl);
+
             ctx.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
+                glow::TEXTURE_2D_ARRAY,
+                glow::TEXTURE_BASE_LEVEL,
+                0,
+            );
+
+            error_check(&ctx.gl);
+
+            ctx.gl.tex_parameter_i32(
+                glow::TEXTURE_2D_ARRAY,
+                glow::TEXTURE_MAX_LEVEL,
+                0,
+            );
+
+            error_check(&ctx.gl);
+
+            ctx.gl.tex_parameter_i32(
+                glow::TEXTURE_2D_ARRAY,
                 glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32, // TODO: linear
+                glow::LINEAR as i32,
             );
 
+            error_check(&ctx.gl);
+
             ctx.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
+                glow::TEXTURE_2D_ARRAY,
                 glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32, // TODO: linear
+                glow::LINEAR as i32,
             );
 
+            error_check(&ctx.gl);
+
             ctx.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
+                glow::TEXTURE_2D_ARRAY,
                 glow::TEXTURE_WRAP_S,
                 glow::CLAMP_TO_BORDER as i32,
             );
 
+            error_check(&ctx.gl);
+
             ctx.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
+                glow::TEXTURE_2D_ARRAY,
                 glow::TEXTURE_WRAP_T,
                 glow::CLAMP_TO_BORDER as i32,
             );
 
+            error_check(&ctx.gl);
+
             ctx.gl.bind_texture(
-                glow::TEXTURE_2D,
+                glow::TEXTURE_2D_ARRAY,
                 None,
             );
+
+            error_check(&ctx.gl);
 
             tex
         }
@@ -234,15 +209,17 @@ impl ShadowMapper {
 
     }
 
-    fn render_light(
+    fn render_light<S>(
         &self,
         ctx : &GraphicsContext,
-        // idx : usize,
-        // view : Mat4,
         tex : glow::Texture,
+        idx : i32,
         lightspace : Mat4,
-        scene : &scene_graph::Scene<'_, Light, Surface, LoadedObj>,
-    ) {
+        scene : &S
+    )
+    where
+        S : Scene<Light, Surface, LoadedObj>,
+    {
         unsafe {
 
             ctx.gl.bind_framebuffer(
@@ -250,39 +227,52 @@ impl ShadowMapper {
                 Some(self.fbo),
             );
 
+            error_check(&ctx.gl);
+
             ctx.gl.bind_texture(
-                glow::TEXTURE_2D,
+                glow::TEXTURE_2D_ARRAY,
                 Some(tex),
             );
 
-            ctx.gl.framebuffer_texture_2d(
+            error_check(&ctx.gl);
+
+            ctx.gl.framebuffer_texture_layer(
                 glow::FRAMEBUFFER,
                 glow::DEPTH_ATTACHMENT,
-                glow::TEXTURE_2D,
                 Some(tex),
                 0, // top level
-                // 0, // idx as i32,
+                idx,
             );
 
+            error_check(&ctx.gl);
 
             let fb_status = ctx.gl.check_framebuffer_status(
                 glow::FRAMEBUFFER
             );
 
+            error_check(&ctx.gl);
+
             assert_eq!(fb_status, glow::FRAMEBUFFER_COMPLETE);
 
-            let mut old_vp = [0i32;4];
-            ctx.gl.get_parameter_i32_slice(glow::VIEWPORT,  &mut old_vp);
             ctx.gl.viewport(0, 0, 1024, 1024);
+            error_check(&ctx.gl);
+
             ctx.gl.draw_buffer(glow::NONE);
+            error_check(&ctx.gl);
+
             ctx.gl.enable(glow::DEPTH_TEST);
+            error_check(&ctx.gl);
             // I'm not sure where the scissor test is being enabled.
             // A quick look at egui_glow shows that it is disabled wherever it's
             // enabled. I should track it down with something like dbg!(check_scisor(ctx))
             // in various points of the update function
             ctx.gl.disable(glow::SCISSOR_TEST);
+            error_check(&ctx.gl);
             ctx.gl.clear(glow::DEPTH_BUFFER_BIT);
+            error_check(&ctx.gl);
+
             ctx.gl.use_program(Some(self.prog.prog));
+            error_check(&ctx.gl);
 
             // iterate the objects
             scene.visit_surfaces(
@@ -315,6 +305,8 @@ impl ShadowMapper {
                         glow::UNSIGNED_INT,
                         0
                     );
+
+                    error_check(&ctx.gl);
                 }
             );
 
@@ -325,10 +317,13 @@ impl ShadowMapper {
 
             error_check(&ctx.gl);
 
-            let [x, y, w, h] = old_vp;
-            ctx.gl.viewport(x, y, w, h);
             ctx.gl.bind_framebuffer(
                 glow::DRAW_FRAMEBUFFER,
+                None,
+            );
+
+            ctx.gl.bind_texture(
+                glow::TEXTURE_2D_ARRAY,
                 None,
             );
 
@@ -337,56 +332,102 @@ impl ShadowMapper {
     }
 }
 
+pub trait Scene<L, S, O> {
+    fn visit_lights<F>(&self, f : &mut F)
+    where
+        F : FnMut(Mat4, &L);
+
+    fn visit_surfaces<F>(&self, f : &mut F)
+    where
+        F : FnMut(Mat4, &S, &O);
+
+    fn collect_lights(&self) -> Vec<(Mat4, L)>
+    where
+        L : Clone
+    {
+        let mut ret = Vec::new();
+        self.visit_lights(&mut |model, params| {
+            ret.push((model, params.clone()));
+        });
+
+        ret
+    }
+
+    fn collect_surfaces(&self) -> Vec<(Mat4, S, O)>
+    where
+        S : Clone,
+        O : Clone,
+    {
+        let mut ret = Vec::new();
+        self.visit_surfaces(&mut |model, params, object| {
+            ret.push((model, params.clone(), object.clone()));
+        });
+
+        ret
+    }
+}
+
 type GlutinContext = glutin::ContextWrapper<
     glutin::PossiblyCurrent,
     glutin::window::Window
 >;
 
+
+/// An arena allocator that only drops objects when the whole arena is
+/// dropped
+pub struct Recycler<T> {
+    // the lenth of the current cache
+    cursor : usize,
+    data : Vec<T>,
+}
+
+impl<T> Recycler<T> {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn recycle(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn allocate<F>(&mut self, alloc : F) -> &T
+    where
+        F : FnOnce() -> T,
+    {
+        assert!(self.data.len() >= self.cursor);
+
+        if self.cursor >= self.data.len() {
+            self.data.push(alloc());
+        }
+
+        let ret = &self.data[self.cursor];
+        self.cursor += 1;
+        ret
+    }
+}
+
+impl<T> Default for Recycler<T> {
+    fn default() -> Self {
+        Self{
+            cursor : 0,
+            data : Vec::new(),
+        }
+    }
+}
+
 pub struct RenderCache {
     shadow_mapper : ShadowMapper,
-    shadow_textures_idx : usize,
-    shadow_textures : Vec<glow::Texture>,
-    shadow_none_textures_idx : usize,
-    shadow_none_textures : Vec<glow::Texture>,
+    shadow_texture : glow::Texture,
 }
 
 impl RenderCache {
     pub fn new(ctx : &GraphicsContext) -> Self {
+        let shadow_mapper = ShadowMapper::new(ctx);
+        let shadow_texture = ShadowMapper::new_texture(ctx);
+
         Self{
-            shadow_mapper : ShadowMapper::new(ctx),
-            shadow_textures_idx : 0,
-            shadow_textures : Vec::new(),
-            shadow_none_textures_idx : 0,
-            shadow_none_textures : Vec::new(),
-        }
-    }
-
-    fn clear(&mut self) {
-        self.shadow_textures_idx = 0;
-        self.shadow_none_textures_idx = 0;
-    }
-
-    fn alloc_shadow_texture(
-        &mut self,
-        ctx : &GraphicsContext
-    ) -> glow::Texture {
-
-        assert!(self.shadow_textures.len() >= self.shadow_textures_idx);
-        if self.shadow_textures.len() > self.shadow_textures_idx {
-            self.shadow_textures[self.shadow_textures_idx]
-        } else {
-            self.shadow_textures.push(ShadowMapper::new_texture(&ctx));
-            self.shadow_textures[self.shadow_textures_idx]
-        }
-    }
-
-    fn alloc_shadow_none_texture(&mut self, ctx : &GraphicsContext) -> glow::Texture {
-        assert!(self.shadow_none_textures.len() >= self.shadow_none_textures_idx);
-        if self.shadow_none_textures.len() > self.shadow_textures_idx {
-            self.shadow_none_textures[self.shadow_none_textures_idx]
-        } else {
-            self.shadow_none_textures.push(ShadowMapper::new_none_texture(&ctx));
-            self.shadow_none_textures[self.shadow_none_textures_idx]
+            shadow_mapper,
+            shadow_texture,
         }
     }
 }
@@ -428,6 +469,12 @@ impl GraphicsContext {
         let scale = self.gl_window.window().scale_factor();
         let size : glutin::dpi::LogicalSize<f32> = self.gl_window.window().inner_size().to_logical(scale);
         (size.width as f32) / (size.height as f32)
+    }
+
+    pub fn physical_size(&self) -> (u32, u32) {
+        let size = self.gl_window.window().inner_size();
+
+        (size.width, size.height)
     }
 
     pub fn logical_size(&self) -> (u32, u32) {
@@ -694,25 +741,29 @@ impl GraphicsContext {
         }
     }
 
-    pub fn render_scene<U : Uniforms>(
+    pub fn render_scene<U, S>(
         &self,
         cache : &mut RenderCache,
         camera : &Camera,
-        scene: &scene_graph::Scene<'_, Light, Surface, LoadedObj>,
+        scene: &S,
         prog : &LoadedProg,
         extra_uniforms : U,
-    ) {
+    )
+    where
+        S : Scene<Light, Surface, LoadedObj>,
+        U : Uniforms,
+    {
 
-        cache.clear();
+        // cache.clear();
 
-        #[derive(Default)]
+        #[derive(Debug,Default)]
         struct LightUniforms {
             len : i32,
-
             positions : Vec<Vec4>,
             colors : Vec<Vec4>,
             lightspaces : Vec<Mat4>,
-            shadows : Vec<i32>,
+            has_shadow : Vec<i32>,
+            shadows : i32,
         }
 
         // TODO: move this to the cache
@@ -735,54 +786,31 @@ impl GraphicsContext {
             }
         );
 
-        // TODO: move this to the cache
-        let mut texture_loads = Vec::new();
-        let mut texture_unit = 0i32..;
-
-        let none_texture_unit = texture_unit.next().unwrap();
-
-        texture_loads.push((
-                none_texture_unit,
-                cache.alloc_shadow_none_texture(self),
-        ));
-
-        for (mat, shadow) in shadows.drain(..) {
+        for (idx, (mat, shadow)) in shadows.drain(..).enumerate() {
             match shadow {
                 Shadow::None(proj) => {
                     let lightspace = proj * mat;
 
                     lights.lightspaces.push(lightspace);
-                    lights.shadows.push(none_texture_unit);
+                    lights.has_shadow.push(0);
                 },
                 Shadow::Plane(proj) => {
 
-                    let tex = cache.alloc_shadow_texture(self);
                     let lightspace = proj * mat;
 
-                    // TODO?: the shadow mapper uses a texture unit which is known
-                    // to us (currently unit 0), so we could start loading
-                    // texture units right away
                     cache.shadow_mapper.render_light(
                         self,
-                        // camera.view(),
-                        tex,
+                        cache.shadow_texture,
+                        idx as i32,
                         lightspace,
                         scene,
                     );
 
-                    let unit = texture_unit.next().unwrap();
-
-                    texture_loads.push((
-                            unit,
-                            tex,
-                    ));
-
                     lights.lightspaces.push(lightspace);
-                    lights.shadows.push(unit);
+                    lights.has_shadow.push(1);
                 },
             }
         }
-
 
         struct SceneUniforms<U> {
             // position and color
@@ -819,9 +847,10 @@ impl GraphicsContext {
 
 
                     set_slice!(lights.lightspaces);
-                    set_slice!(lights.shadows);
                     set_slice!(lights.positions);
                     set_slice!(lights.colors);
+                    set_slice!(lights.has_shadow);
+                    set!(lights.shadows);
                     set!(lights.len);
 
                     set!(projection);
@@ -854,14 +883,15 @@ impl GraphicsContext {
         unsafe {
             self.gl.use_program(Some(prog.prog));
             self.gl.enable(glow::DEPTH_TEST);
-            let (w, h) = self.logical_size();
+            let (w, h) = self.physical_size();
+
             self.gl.viewport(0, 0, w.try_into().unwrap(), h.try_into().unwrap());
 
-            for (unit, tex) in texture_loads {
-                self.gl.active_texture(glow::TEXTURE0 + (unit as u32));
-                self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-                error_check(&self.gl);
-            }
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl.bind_texture(
+                glow::TEXTURE_2D_ARRAY,
+                Some(cache.shadow_texture),
+            );
         }
 
         error_check(&self.gl);
@@ -908,10 +938,8 @@ impl GraphicsContext {
         );
 
         unsafe {
-            for unit in 0..texture_unit.next().unwrap() {
-                self.gl.active_texture(glow::TEXTURE0 + (unit as u32));
-                self.gl.bind_texture(glow::TEXTURE_2D, None);
-            }
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
 
             self.gl.use_program(None);
             self.gl.bind_vertex_array(None);

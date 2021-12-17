@@ -20,7 +20,8 @@ uniform struct {
     vec4 positions[max_lights];
     vec4 colors[max_lights];
     mat4 lightspaces[max_lights];
-    sampler2D shadows[max_lights];
+    bool has_shadow[max_lights];
+    sampler2DArray shadows;
 } lights;
 
 uniform bool enable_lighting;
@@ -33,25 +34,11 @@ vec3 dehomo(vec4 p) {
     return p.xyz / p.w;
 }
 
-#define CASE(N) case N: \
-    return texture(lights.shadows[N], uv).x;
-
-// TODO: remove this attrocity, probably with texture2DArray
 float shadow_texture(vec2 uv, int idx) {
-    switch (idx) {
-        CASE(0)
-        CASE(1)
-        CASE(2)
-        CASE(3)
-        CASE(4)
-        CASE(5)
-        CASE(6)
-        CASE(7)
-        CASE(8)
-        CASE(9)
-        default:
-            return 1.0;
-    }
+    return texture(
+        lights.shadows,
+        vec3(uv, float(idx))
+    ).x;
 }
 
 void main (void) {
@@ -62,13 +49,18 @@ void main (void) {
 
     fragColor = phong.emission;
 
+    int si = 0;
     for (int i = 0; i < lights.len; i++) {
         float shadow = 1.0;
 
-        vec3 lightspace = dehomo(lights.lightspaces[i] * vec4(position, 1.0)) * 0.5 +
-            vec3(0.5);
+        vec3 lightspace = dehomo(
+            lights.lightspaces[i] *
+            vec4(position, 1.0)
+        ) * 0.5 + vec3(0.5);
 
-        if (shadow_texture(lightspace.xy, i) < lightspace.z - 0.005f || lightspace.z < 0.005f) {
+        if (lights.has_shadow[i] &&
+            shadow_texture(lightspace.xy, si++) < lightspace.z - 0.005f) {
+
             shadow = 0.0;
         }
 
@@ -86,3 +78,4 @@ void main (void) {
         fragColor += reflection * lights.colors[i];
     }
 }
+

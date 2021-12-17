@@ -92,7 +92,7 @@ impl UniformValue<'_> {
 
         match self {
             Int(_) | Intv(_) => glow::INT,
-            Uint(_) | Uintv(_)  => glow::INT,
+            Uint(_) | Uintv(_) => glow::INT,
             Bool(_) => glow::BOOL,
             Float(_) => glow::FLOAT,
 
@@ -110,6 +110,8 @@ impl UniformValue<'_> {
         use UniformValue::*;
 
         match self {
+            Intv(v) => v.len(),
+            Uintv(v) => v.len(),
             Vec2v(v) => v.len(),
             Vec3v(v) => v.len(),
             Vec4v(v) => v.len(),

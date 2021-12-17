@@ -4,6 +4,7 @@ use glam::Mat4;
 mod test {
     use super::*;
     use glam::Vec3;
+    use crate::Scene;
 
     #[test]
     fn lights_1() {
@@ -81,17 +82,10 @@ mod test {
         let mut g = SceneGraph::<i32, (), ()>::default();
         let (root, expect) = f(&mut g);
 
-        let mut visited = Vec::new();
-
-        Scene::new(
-            &mut g,
+        let visited = g.visit(
             &[(Mat4::IDENTITY, Node::Handle(root))],
             &mut Default::default(),
-        ).visit_lights(
-            &mut |model, params| {
-                visited.push((model, *params));
-            }
-        );
+        ).collect_lights();
 
         assert_eq!(
             visited,
@@ -220,17 +214,10 @@ mod test {
         let mut g = SceneGraph::<(), i32, i32>::default();
         let (root, expect) = f(&mut g);
 
-        let mut visited = Vec::new();
-
-        Scene::new(
-            &mut g,
+        let visited = g.visit(
             &[(Mat4::IDENTITY, Node::Handle(root))],
             &mut Default::default(),
-        ).visit_surfaces(
-            &mut |model, params, object| {
-                visited.push((model, *params, *object));
-            }
-        );
+        ).collect_surfaces();
 
         assert_eq!(
             visited,
@@ -285,8 +272,8 @@ mod test {
         ]);
 
         let mut cache = Cache::default();
-        Scene::new(
-            &mut g,
+
+        g.visit(
             &[
                 (Mat4::IDENTITY, Node::Handle(b1)),
                 (Mat4::IDENTITY, Node::Handle(b2)),
@@ -371,22 +358,79 @@ pub struct ObjectHandle(usize);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NodeHandle(usize);
 
-pub struct Scene<'a, L, S, O> {
+pub struct SceneGraphVisitor<'a, L, S, O> {
     scene_graph : &'a SceneGraph<L, S, O>,
     roots : &'a [(Mat4, Node<L, S>)],
     cache : &'a mut Cache,
 }
 
-impl<'a, L, S, O> Scene<'a, L, S, O> {
-    pub fn new(
-        scene_graph: &'a SceneGraph<L, S, O> ,
-        roots : &'a [(Mat4, Node<L, S>)],
-        cache : &'a mut Cache,
-    ) -> Self {
-        let mut ret = Self{ scene_graph, roots, cache };
-        ret.fill_cache();
-        ret
+impl<'a, L, S, O> crate::Scene<L, S, O> for SceneGraphVisitor<'a, L, S, O> {
+    fn visit_surfaces<F>(
+        &self,
+        f : &mut F,
+    )
+    where
+        F : FnMut(Mat4, &S, &O)
+    {
+        let it = self.scene_graph.objects.iter().enumerate();
+
+        for (idx, Object{object, parents}) in it {
+            for (mat, node) in self.roots {
+                match node {
+                    Node::Surface(o, params) if o.0 == idx => {
+                        f(*mat, params, object)
+                    },
+                    _ => {}
+                }
+            }
+
+            for handle in parents {
+                let node = &self.scene_graph.nodes[handle.0];
+                if let NodeInternal::Surface{params, ..} = node {
+                    self.visit_surfaces_rec(
+                        params,
+                        object,
+                        *handle,
+                        Mat4::IDENTITY,
+                        f
+                    );
+                } else {
+                    unreachable!(
+                        "node pointed by Object.parent should be surface"
+                    );
+                }
+
+            }
+        }
     }
+
+    fn visit_lights<F>(
+        &self,
+        f : &mut F,
+    )
+    where
+        F : FnMut(Mat4, &L)
+    {
+        for (mat, node) in self.roots {
+            if let Node::Light(params) = node {
+                f(*mat, params);
+            }
+        }
+
+        for (idx, node) in self.scene_graph.nodes.iter().enumerate() {
+            if let NodeInternal::Light{params,..} = node {
+                self.visit_lights_rec(
+                    params,
+                    NodeHandle(idx),
+                    Mat4::IDENTITY,
+                    f,
+                );
+            }
+        }
+    }
+}
+
+impl<'a, L, S, O> SceneGraphVisitor<'a, L, S, O> {
 
     fn fill_cache_rec(
         &mut self,
@@ -499,44 +543,6 @@ impl<'a, L, S, O> Scene<'a, L, S, O> {
         }
     }
 
-    pub fn visit_surfaces<F>(
-        &self,
-        f : &mut F,
-    )
-    where
-        F : FnMut(Mat4, &S, &O)
-    {
-        let it = self.scene_graph.objects.iter().enumerate();
-
-        for (idx, Object{object, parents}) in it {
-            for (mat, node) in self.roots {
-                match node {
-                    Node::Surface(o, params) if o.0 == idx => {
-                        f(*mat, params, object)
-                    },
-                    _ => {}
-                }
-            }
-
-            for handle in parents {
-                let node = &self.scene_graph.nodes[handle.0];
-                if let NodeInternal::Surface{params, ..} = node {
-                    self.visit_surfaces_rec(
-                        params,
-                        object,
-                        *handle,
-                        Mat4::IDENTITY,
-                        f
-                    );
-                } else {
-                    unreachable!(
-                        "node pointed by Object.parent should be surface"
-                    );
-                }
-
-            }
-        }
-    }
 
     fn visit_lights_rec<F>(
         &self,
@@ -584,30 +590,6 @@ impl<'a, L, S, O> Scene<'a, L, S, O> {
         }
     }
 
-    pub fn visit_lights<F>(
-        &self,
-        f : &mut F,
-    )
-    where
-        F : FnMut(Mat4, &L)
-    {
-        for (mat, node) in self.roots {
-            if let Node::Light(params) = node {
-                f(*mat, params);
-            }
-        }
-
-        for (idx, node) in self.scene_graph.nodes.iter().enumerate() {
-            if let NodeInternal::Light{params,..} = node {
-                self.visit_lights_rec(
-                    params,
-                    NodeHandle(idx),
-                    Mat4::IDENTITY,
-                    f,
-                );
-            }
-        }
-    }
 }
 
 pub struct SceneGraph<L, S, O> {
@@ -642,6 +624,16 @@ pub struct Cache {
 }
 
 impl<L, S, O> SceneGraph<L, S, O> {
+
+    pub fn visit<'a>(
+        &'a self,
+        roots : &'a [(Mat4, Node<L, S>)],
+        cache : &'a mut Cache,
+    ) -> SceneGraphVisitor<'_, L, S, O> {
+        let mut ret = SceneGraphVisitor{ scene_graph : self, roots, cache };
+        ret.fill_cache();
+        ret
+    }
 
     pub fn add_object(&mut self, object : O) -> ObjectHandle {
         self.objects.push(Object{

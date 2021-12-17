@@ -1,4 +1,4 @@
-use game_engine::*;
+use graphics_lib::*;
 
 use camera::*;
 
@@ -98,25 +98,37 @@ impl MyScene {
         let sphere = add_object_surface(
             &mut g,
             sphere,
-            Surface{ material : PhongMaterial::turquoise() },
+            Surface{
+                cast_shadow : true,
+                material : PhongMaterial::turquoise(),
+            },
         );
 
         let teapot = add_object_surface(
             &mut g,
             teapot,
-            Surface{ material : PhongMaterial::turquoise() },
+            Surface{
+                cast_shadow : true,
+                material : PhongMaterial::turquoise(),
+            },
         );
 
         let cube = add_object_surface(
             &mut g,
             cube,
-            Surface{ material : PhongMaterial::turquoise() },
+            Surface{
+                cast_shadow : false,
+                material : PhongMaterial::turquoise(),
+            },
         );
 
         let bunny = add_object_surface(
             &mut g,
             bunny,
-            Surface{ material : PhongMaterial::turquoise() },
+            Surface{
+                cast_shadow : true,
+                material : PhongMaterial::turquoise(),
+            },
         );
 
         Self {
@@ -156,7 +168,7 @@ impl App for MyApp {
     fn init(ctx : &mut GraphicsContext) -> Self {
         // try frame buffer
 
-        ctx.set_title("game-engine");
+        ctx.set_title("graphics-lib");
 
         let (major, minor) = ctx.gl_version();
         println!("OpenGL version: {}.{}", major, minor);
@@ -370,8 +382,7 @@ impl App for MyApp {
             ctx.render_scene(
                 &mut self.render_cache,
                 &self.camera,
-                &scene_graph::Scene::new(
-                    &self.scene.graph,
+                &self.scene.graph.visit(
                     roots,
                     &mut Default::default(),
                 ),

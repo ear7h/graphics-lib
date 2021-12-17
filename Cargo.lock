@@ -541,23 +541,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
-name = "game-engine"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "egui",
- "egui_glow",
- "glam",
- "glow",
- "glutin",
- "image",
- "quick_from",
- "rand",
- "statrs",
- "winit_input_helper",
-]
-
-[[package]]
 name = "getrandom"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -680,6 +663,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3da5951a1569dbab865c6f2a863efafff193a93caf05538d193e9e3816d21696"
 dependencies = [
  "gl_generator",
+]
+
+[[package]]
+name = "graphics-lib"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "egui",
+ "egui_glow",
+ "glam",
+ "glow",
+ "glutin",
+ "image",
+ "quick_from",
+ "rand",
+ "statrs",
+ "winit_input_helper",
 ]
 
 [[package]]
